@@ -1,0 +1,31 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc g++ make curl git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and install requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy project files
+COPY . .
+
+# Create directories
+RUN mkdir -p /app/logs /app/keys /app/circuits /app/proofs /app/models
+
+# Server-specific setup
+RUN chmod +x zkfl_production/run_server.py
+
+# Expose Flower server port
+EXPOSE 8080
+
+# Health check (disable for now since we don't have health endpoint)
+# HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+#     CMD curl -f http://localhost:8080/health || exit 1
+
+# Run server with enhanced Docker wrapper
+CMD ["python", "zkfl_production/docker_server_wrapper.py"]

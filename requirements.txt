@@ -1,11 +1,50 @@
-tqdm
-numpy
+# Core Federated Learning Framework
+flwr>=1.18.0
 ray>=2.3.0
-matplotlib
-pillow
-scikit-learn
-seaborn
-pandas
-opacus
-tenseal
-pyyaml
+
+# Machine Learning & Data Processing
+torch>=2.8.0
+torchvision>=0.23.0
+numpy>=1.26.0,<3.0.0
+scikit-learn>=1.3.0
+
+# Data Visualization & Analysis
+matplotlib>=3.7.0
+seaborn>=0.12.0
+pandas>=2.0.0
+pillow>=10.0.0
+
+# Progress & Utilities
+tqdm>=4.65.0
+pyyaml>=6.0.0
+
+# Differential Privacy
+opacus>=1.4.0
+
+# Blockchain & Web3 Dependencies
+web3>=6.0.0
+eth-account>=0.8.0
+eth-utils>=2.0.0
+py-solc-x>=1.12.0
+
+# Cryptography & Security
+cryptography>=41.0.0
+pycryptodome>=3.18.0
+
+# Zero-Knowledge Proof Libraries (Mock implementations included)
+# For production, replace with actual ZK libraries:
+# circomlib>=0.5.0      # Circuit compilation
+# snarkjs>=0.4.0        # JavaScript ZK proofs
+# arkworks-rs           # Rust-based ZK (Python bindings)
+# py-ecc>=6.0.0         # Elliptic curve cryptography
+# plonk>=0.1.0          # PLONK proof system
+
+# Development & Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+jupyter>=1.0.0
+ipykernel>=6.25.0
+
+# Optional: Advanced Blockchain Features
+# brownie>=1.19.0       # Smart contract development
+# ganache-cli>=6.12.0   # Local blockchain for testing

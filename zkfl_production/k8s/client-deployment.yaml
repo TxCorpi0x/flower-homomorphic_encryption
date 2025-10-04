@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zkfl-clients
+  namespace: zkfl-system
+  labels:
+    app: zkfl-client
+    component: client
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: zkfl-client
+  template:
+    metadata:
+      labels:
+        app: zkfl-client
+        component: client
+    spec:
+      initContainers:
+      - name: wait-for-server
+        image: busybox:1.35
+        command: 
+        - sh
+        - -c
+        - |
+          until nc -z zkfl-server-service 8080; do
+            echo "Waiting for server..."
+            sleep 2
+          done
+          echo "Server is ready!"
+      containers:
+      - name: zkfl-client
+        image: zkfl/client:latest
+        envFrom:
+        - configMapRef:
+            name: zkfl-config
+        env:
+        - name: CLIENT_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "1"
+        volumeMounts:
+        - name: zkfl-logs
+          mountPath: /app/logs
+        - name: zkfl-data
+          mountPath: /app/data
+        - name: zkfl-keys
+          mountPath: /app/keys
+      volumes:
+      - name: zkfl-logs
+        persistentVolumeClaim:
+          claimName: zkfl-logs-pvc
+      - name: zkfl-data
+        persistentVolumeClaim:
+          claimName: zkfl-data-pvc
+      - name: zkfl-keys
+        persistentVolumeClaim:
+          claimName: zkfl-keys-pvc
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: zkfl-client-hpa
+  namespace: zkfl-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: zkfl-clients
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80

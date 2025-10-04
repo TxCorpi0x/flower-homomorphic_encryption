@@ -1,0 +1,163 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zkfl-server
+  namespace: zkfl-system
+  labels:
+    app: zkfl-server
+    component: server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zkfl-server
+  template:
+    metadata:
+      labels:
+        app: zkfl-server
+        component: server
+    spec:
+      containers:
+      - name: zkfl-server
+        image: zkfl/server:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 8443
+          name: https
+        envFrom:
+        - configMapRef:
+            name: zkfl-config
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2"
+        volumeMounts:
+        - name: zkfl-logs
+          mountPath: /app/logs
+        - name: zkfl-data
+          mountPath: /app/data
+        - name: zkfl-keys
+          mountPath: /app/keys
+        - name: zkfl-circuits
+          mountPath: /app/circuits
+        - name: zkfl-proofs
+          mountPath: /app/proofs
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: zkfl-logs
+        persistentVolumeClaim:
+          claimName: zkfl-logs-pvc
+      - name: zkfl-data
+        persistentVolumeClaim:
+          claimName: zkfl-data-pvc
+      - name: zkfl-keys
+        persistentVolumeClaim:
+          claimName: zkfl-keys-pvc
+      - name: zkfl-circuits
+        persistentVolumeClaim:
+          claimName: zkfl-circuits-pvc
+      - name: zkfl-proofs
+        persistentVolumeClaim:
+          claimName: zkfl-proofs-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zkfl-server-service
+  namespace: zkfl-system
+  labels:
+    app: zkfl-server
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  - port: 8443
+    targetPort: 8443
+    protocol: TCP
+    name: https
+  selector:
+    app: zkfl-server
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zkfl-logs-pvc
+  namespace: zkfl-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zkfl-data-pvc
+  namespace: zkfl-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zkfl-keys-pvc
+  namespace: zkfl-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zkfl-circuits-pvc
+  namespace: zkfl-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zkfl-proofs-pvc
+  namespace: zkfl-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi

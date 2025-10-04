@@ -1,0 +1,2 @@
+# This file ensures the circuits directory is preserved in git
+# ZK circuit files will be generated here during development

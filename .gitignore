@@ -1,3 +1,8 @@
+# ==============================================
+# ZK + Blockchain Enhanced Federated Learning
+# .gitignore for secure FL with zero-knowledge proofs
+# ==============================================
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -133,7 +138,7 @@ dmypy.json
 
 /.vscode
 
-# Custom
+# Custom Project Files
 *.csv
 *.DS_Store
 /docs/source/stub/
@@ -147,7 +152,155 @@ run-pytorch-data.py
 results/
 *.pkl
 
+# Legacy FHE files (kept for reference)
 !/data/
 !/secret.pkl
 !/server.pkl
 !/server_key.pkl
+
+# ==============================================
+# ZK + Blockchain Specific Ignores
+# ==============================================
+
+# Zero-Knowledge Proof Files
+proofs/
+*.proof
+circuits/*.json
+circuits/*.r1cs
+circuits/*.wasm
+circuits/*.zkey
+keys/
+keys/*.json
+keys/*.key
+keys/*.params
+verification_keys/
+proving_keys/
+
+# Blockchain & Smart Contract Files
+contracts/build/
+contracts/deployments/
+contracts/*.abi
+contracts/*.bin
+node_modules/
+.env.local
+.env.development
+.env.production
+
+# Private Keys and Secrets (CRITICAL - NEVER COMMIT)
+*.private
+*.secret
+*.keystore
+.private_keys/
+wallet.json
+mnemonic.txt
+seed.txt
+*.pem
+*.p12
+
+# Blockchain Data
+blockchain_data/
+ganache_data/
+chain_data/
+.chaindata/
+
+# Cryptographic Materials
+*.crt
+*.der
+*.p7b
+*.p7c
+*.pfx
+
+# ML Model Files & Checkpoints
+models/
+checkpoints/
+*.ckpt
+*.h5
+*.hdf5
+model_weights/
+saved_models/
+
+# Differential Privacy Logs
+dp_logs/
+privacy_budget.json
+noise_logs/
+
+# Simulation & Training Outputs
+simulation_results/
+training_logs/
+metrics/
+plots/
+confusion_matrices/
+roc_curves/
+
+# Temporary ZK Files
+*.wtns
+*.sym
+circuit.r1cs
+circuit.wasm
+verification_key.json
+witness.wtns
+
+# Benchmark & Performance Data
+benchmarks/
+performance_logs/
+profiling_data/
+
+# Development & Testing
+test_outputs/
+debug_logs/
+temp/
+tmp/
+.temp/
+
+# IDE & Editor Files
+.vscode/settings.json
+.vscode/launch.json
+*.swp
+*.swo
+*~
+
+# OS Generated Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Documentation Build Files
+docs/_build/
+docs/build/
+_build/
+site/
+
+# Conda Environment Files
+environment.yml.bak
+.conda/
+
+# Ray/Flower Simulation Files
+.ray/
+ray_results/
+flower_logs/
+
+# Jupyter Lab/Notebook Files
+.jupyter/
+.ipynb_checkpoints/
+
+# ==============================================
+# Example/Demo Data (keep structure, ignore content)
+# ==============================================
+
+# Data directories (keep empty dirs for structure)
+data/*/
+!zkfl/data/
+!data/.gitkeep
+
+# Example outputs (for development)
+example_outputs/
+sample_results/
+
+# ==============================================
+# Security Notes:
+# NEVER commit private keys, secrets, or real blockchain credentials!
+# ==============================================

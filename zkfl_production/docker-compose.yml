@@ -1,0 +1,145 @@
+version: '3.8'
+
+services:
+  zkfl-server:
+    build:
+      context: ..
+      dockerfile: zkfl_production/Dockerfile.server
+    container_name: zkfl-server
+    ports:
+      - "8080:8080"
+      - "8443:8443"  # HTTPS port
+    environment:
+      - DATASET_TYPE=synthetic
+      - NUM_CLIENTS=3
+      - NUM_ROUNDS=10
+      - MIN_NUM_CLIENTS=1
+      - MIN_AVAILABLE_CLIENTS=1
+      - MIN_FIT_CLIENTS=1
+      - MIN_EVAL_CLIENTS=1
+      - ZK_ENABLED=true
+      - DP_ENABLED=true
+      - BLOCKCHAIN_ENABLED=false
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8080
+      - GRPC_VERBOSITY=ERROR
+      - GRPC_TRACE=
+      - GRPC_KEEPALIVE_TIME_MS=30000
+      - GRPC_KEEPALIVE_TIMEOUT_MS=5000
+      - GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS=1
+      - GRPC_HTTP2_MAX_PINGS_WITHOUT_DATA=0
+      - GRPC_HTTP2_MIN_PING_INTERVAL_WITHOUT_DATA_MS=300000
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./keys:/app/keys
+      - ./circuits:/app/circuits
+      - ./proofs:/app/proofs
+    networks:
+      - zkfl-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  zkfl-client-1:
+    build:
+      context: ..
+      dockerfile: zkfl_production/Dockerfile.client
+    container_name: zkfl-client-1
+    depends_on:
+      - zkfl-server
+    environment:
+      - DATASET_TYPE=synthetic
+      - NUM_CLIENTS=3
+      - CLIENT_ID=1
+      - SERVER_HOST=zkfl-server
+      - SERVER_PORT=8080
+      - ZK_ENABLED=true
+      - DP_ENABLED=true
+      - BLOCKCHAIN_ENABLED=false
+      - GRPC_VERBOSITY=ERROR
+      - GRPC_TRACE=
+      - GRPC_KEEPALIVE_TIME_MS=30000
+      - GRPC_KEEPALIVE_TIMEOUT_MS=5000
+      - GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS=1
+      - GRPC_HTTP2_MAX_PINGS_WITHOUT_DATA=0
+      - GRPC_HTTP2_MIN_PING_INTERVAL_WITHOUT_DATA_MS=300000
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./keys:/app/keys
+    networks:
+      - zkfl-network
+
+  zkfl-client-2:
+    build:
+      context: ..
+      dockerfile: zkfl_production/Dockerfile.client
+    container_name: zkfl-client-2
+    depends_on:
+      - zkfl-server
+    environment:
+      - DATASET_TYPE=synthetic
+      - NUM_CLIENTS=3
+      - CLIENT_ID=2
+      - SERVER_HOST=zkfl-server
+      - SERVER_PORT=8080
+      - ZK_ENABLED=true
+      - DP_ENABLED=true
+      - BLOCKCHAIN_ENABLED=false
+      - GRPC_VERBOSITY=ERROR
+      - GRPC_TRACE=
+      - GRPC_KEEPALIVE_TIME_MS=30000
+      - GRPC_KEEPALIVE_TIMEOUT_MS=5000
+      - GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS=1
+      - GRPC_HTTP2_MAX_PINGS_WITHOUT_DATA=0
+      - GRPC_HTTP2_MIN_PING_INTERVAL_WITHOUT_DATA_MS=300000
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./keys:/app/keys
+    networks:
+      - zkfl-network
+
+  zkfl-client-3:
+    build:
+      context: ..
+      dockerfile: zkfl_production/Dockerfile.client
+    container_name: zkfl-client-3
+    depends_on:
+      - zkfl-server
+    environment:
+      - DATASET_TYPE=synthetic
+      - NUM_CLIENTS=3
+      - CLIENT_ID=3
+      - SERVER_HOST=zkfl-server
+      - SERVER_PORT=8080
+      - ZK_ENABLED=true
+      - DP_ENABLED=true
+      - BLOCKCHAIN_ENABLED=false
+      - GRPC_VERBOSITY=ERROR
+      - GRPC_TRACE=
+      - GRPC_KEEPALIVE_TIME_MS=30000
+      - GRPC_KEEPALIVE_TIMEOUT_MS=5000
+      - GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS=1
+      - GRPC_HTTP2_MAX_PINGS_WITHOUT_DATA=0
+      - GRPC_HTTP2_MIN_PING_INTERVAL_WITHOUT_DATA_MS=300000
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./keys:/app/keys
+    networks:
+      - zkfl-network
+
+networks:
+  zkfl-network:
+    driver: bridge
+
+volumes:
+  zkfl-logs:
+  zkfl-data:
+  zkfl-keys:
+  zkfl-circuits:
+  zkfl-proofs:

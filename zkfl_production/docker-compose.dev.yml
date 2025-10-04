@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  zkfl-server:
+    build:
+      context: ..
+      dockerfile: zkfl_production/Dockerfile.server
+    container_name: zkfl-dev-server
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    environment:
+      - NUM_ROUNDS=3
+      - MIN_NUM_CLIENTS=1
+      - MIN_AVAILABLE_CLIENTS=1
+      - MIN_FIT_CLIENTS=1
+      - MIN_EVAL_CLIENTS=1
+      - ZK_ENABLED=false
+      - DP_ENABLED=false
+      - BLOCKCHAIN_ENABLED=false
+      - DEBUG=true
+    volumes:
+      - ../:/app:cached  # Live code reload for development
+      - ./logs:/app/logs
+      - ./data:/app/data
+    networks:
+      - zkfl-dev-network
+    stdin_open: true
+    tty: true
+
+  zkfl-client-dev:
+    build:
+      context: ..
+      dockerfile: zkfl_production/Dockerfile.client
+    container_name: zkfl-dev-client
+    depends_on:
+      - zkfl-server
+    environment:
+      - CLIENT_ID=1
+      - SERVER_HOST=zkfl-server
+      - SERVER_PORT=8080
+      - ZK_ENABLED=false
+      - DP_ENABLED=false
+      - BLOCKCHAIN_ENABLED=false
+      - DEBUG=true
+    volumes:
+      - ../:/app:cached  # Live code reload for development
+      - ./logs:/app/logs
+      - ./data:/app/data
+    networks:
+      - zkfl-dev-network
+    stdin_open: true
+    tty: true
+
+networks:
+  zkfl-dev-network:
+    driver: bridge

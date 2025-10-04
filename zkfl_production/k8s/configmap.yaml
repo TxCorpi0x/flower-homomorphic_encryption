@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zkfl-config
+  namespace: zkfl-system
+data:
+  # Server Configuration
+  NUM_ROUNDS: "10"
+  MIN_NUM_CLIENTS: "3"
+  MIN_AVAILABLE_CLIENTS: "3"
+  MIN_FIT_CLIENTS: "3"
+  MIN_EVAL_CLIENTS: "2"
+  SERVER_PORT: "8080"
+  
+  # Security Configuration
+  ZK_ENABLED: "true"
+  DP_ENABLED: "true"
+  BLOCKCHAIN_ENABLED: "false"
+  
+  # Networking
+  SERVER_HOST: "zkfl-server-service"
+  
+  # Performance
+  BATCH_SIZE: "32"
+  LEARNING_RATE: "0.01"
+  
+  # Privacy Settings
+  DP_EPSILON: "1.0"
+  DP_DELTA: "1e-5"
+  DP_CLIPPING_NORM: "1.0"
+  
+  # ZK Settings
+  ZK_CIRCUIT_SIZE: "1024"
+  ZK_PROVING_KEY_PATH: "/app/keys/proving.key"
+  ZK_VERIFICATION_KEY_PATH: "/app/keys/verification.key"
