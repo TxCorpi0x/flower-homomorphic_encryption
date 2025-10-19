@@ -14,12 +14,14 @@ from flwr.common import (
     MetricsAggregationFn,
     Scalar,
     logger,
-    ndarrays_to_parameters_custom,
-    parameters_to_ndarrays_custom,
+    ndarrays_to_parameters,
+    parameters_to_ndarrays,
 )
 
 from federated import *
 from core.security import aggregate_custom
+from core.zkp import ZKPLayer, aggregate_zkp_layers
+from core.benchmark import get_benchmark, BenchmarkTimer, get_memory_usage_mb
 
 """
 Script with the server-side logic for federated learning with Flower.
@@ -50,6 +52,51 @@ def evaluate2(
     )
     print(f"Server-side evaluation loss {loss} / accuracy {accuracy}")
     return loss, {"accuracy": accuracy}
+
+
+# Benchmark-aware metric aggregators (server-side)
+def aggregate_fit_metrics(metrics: List[Tuple[int, Dict]]) -> Dict:
+    bm = get_benchmark()
+    if bm is not None:
+        for num_examples, client_metrics in metrics:
+            if "client_fit_time" in client_metrics:
+                bm.add_client_fit(client_metrics["client_fit_time"])  # seconds
+            if "upload_size" in client_metrics:
+                bm.add_upload_size(client_metrics["upload_size"])  # bytes
+            if "download_size" in client_metrics:
+                bm.add_download_size(client_metrics["download_size"])  # bytes
+            if "client_memory" in client_metrics:
+                bm.add_client_memory(client_metrics["client_memory"])  # MB
+
+            if "train_loss" in client_metrics:
+                bm.add_train_loss(client_metrics["train_loss"])
+            if "train_accuracy" in client_metrics:
+                bm.add_train_accuracy(client_metrics["train_accuracy"])
+            if "val_loss" in client_metrics:
+                bm.add_val_loss(client_metrics["val_loss"])
+            if "val_accuracy" in client_metrics:
+                bm.add_val_accuracy(client_metrics["val_accuracy"])
+
+            if "proof_generation_time" in client_metrics:
+                bm.add_proof_generation(client_metrics["proof_generation_time"])
+            if "proof_verification_time" in client_metrics:
+                bm.add_proof_verification(client_metrics["proof_verification_time"])
+            if "encryption_time" in client_metrics:
+                bm.add_encryption(client_metrics["encryption_time"])
+            if "decryption_time" in client_metrics:
+                bm.add_decryption(client_metrics["decryption_time"])
+    return {}
+
+
+def evaluate_with_benchmark(server_round: int, parameters, config):
+    bm = get_benchmark()
+    result = evaluate2(server_round, parameters, config)
+    if result is not None and bm is not None:
+        loss, metrics = result
+        bm.add_global_val_loss(loss)
+        if "accuracy" in metrics:
+            bm.add_global_val_accuracy(metrics["accuracy"])
+    return result
 
 
 def get_on_fit_config_fn(
@@ -86,8 +133,8 @@ def aggreg_fit_checkpoint(
         print(f"Saving round {server_round} aggregated_parameters...")
 
         # Convert `Parameters` to `List[np.ndarray]`
-        aggregated_ndarrays: List[np.ndarray] = parameters_to_ndarrays_custom(
-            aggregated_parameters, context_client
+        aggregated_ndarrays: List[np.ndarray] = parameters_to_ndarrays(
+            aggregated_parameters
         )
         """
         [value of 'conv1.weight', 
@@ -104,7 +151,7 @@ def aggreg_fit_checkpoint(
         if context_client:
 
             def serialized(key, matrix):
-                if key == "fc3.weight":
+                if key == "fc3.weight" and hasattr(matrix, "serialize"):
                     return matrix.serialize()
                 else:
                     return matrix
@@ -245,18 +292,23 @@ class FedCustom(fl.server.strategy.Strategy):
             return None, {}
 
         # Convert results parameters --> array matrix
+        # Detect if we're in ZKP mode (clients send numpy but we benchmark)
         weights_results = [
             (
-                parameters_to_ndarrays_custom(fit_res.parameters, self.context_client),
+                parameters_to_ndarrays(fit_res.parameters),
                 fit_res.num_examples,
             )
             for _, fit_res in results
         ]
 
-        # Aggregate parameters using weighted average between the clients and convert back to parameters object (bytes)
-        parameters_aggregated = ndarrays_to_parameters_custom(
-            aggregate_custom(weights_results)
-        )
+        # Aggregate parameters using weighted average between the clients
+        bm = get_benchmark()
+        with BenchmarkTimer(bm, "server_aggregate"):
+            parameters_aggregated = ndarrays_to_parameters(
+                aggregate_custom(weights_results)
+            )
+        if bm is not None:
+            bm.add_server_memory(get_memory_usage_mb())
 
         metrics_aggregated = {}
         # Aggregate custom metrics if aggregation fn was provided
@@ -357,9 +409,7 @@ class FedCustom(fl.server.strategy.Strategy):
             return None
 
         # if we have a global model evaluation on the server side :
-        parameters_ndarrays = parameters_to_ndarrays_custom(
-            parameters, self.context_client
-        )
+        parameters_ndarrays = parameters_to_ndarrays(parameters)
         eval_res = self.evaluate_fn(server_round, parameters_ndarrays, {})
 
         # if you haven't results
@@ -387,23 +437,42 @@ else:
     print("not HE so not key")
     server_context = None
 
-strategy = FedCustom(
-    fraction_fit=args.frac_fit,  # Train on frac_fit % clients (each round)
-    fraction_evaluate=args.frac_eval,  # Sample frac_eval % of available clients for evaluation
-    min_fit_clients=args.min_fit_clients,  # Never sample less than 10 clients for training
-    min_evaluate_clients=(
-        args.min_eval_clients if args.min_eval_clients else args.number_clients // 2
-    ),
-    min_available_clients=args.min_avail_clients,  # Wait until all 10 clients are available
-    evaluate_metrics_aggregation_fn=weighted_average,  # <-- pass the metric aggregation function
-    initial_parameters=ndarrays_to_parameters_custom(
-        get_parameters2(central)
-    ),  # prevents Flower from asking one of the clients for the initial parameters
-    evaluate_fn=(
-        None if args.he else evaluate2
-    ),  # Pass the evaluation function for the server side
-    on_fit_config_fn=get_on_fit_config_fn(
-        epoch=args.max_epochs, lr=args.lr, batch_size=args.batch_size
-    ),  # Pass the fit_config function
-    context_client=server_context,
-)
+if args.benchmark:
+    strategy = FedCustom(
+        fraction_fit=args.frac_fit,
+        fraction_evaluate=args.frac_eval,
+        min_fit_clients=args.min_fit_clients,
+        min_evaluate_clients=(
+            args.min_eval_clients if args.min_eval_clients else args.number_clients // 2
+        ),
+        min_available_clients=args.min_avail_clients,
+        evaluate_metrics_aggregation_fn=weighted_average,
+        fit_metrics_aggregation_fn=aggregate_fit_metrics,
+        initial_parameters=ndarrays_to_parameters(get_parameters2(central)),
+        evaluate_fn=(None if args.he else evaluate_with_benchmark),
+        on_fit_config_fn=get_on_fit_config_fn(
+            epoch=args.max_epochs, lr=args.lr, batch_size=args.batch_size
+        ),
+        context_client=server_context,
+    )
+else:
+    strategy = FedCustom(
+        fraction_fit=args.frac_fit,  # Train on frac_fit % clients (each round)
+        fraction_evaluate=args.frac_eval,  # Sample frac_eval % of available clients for evaluation
+        min_fit_clients=args.min_fit_clients,  # Never sample less than 10 clients for training
+        min_evaluate_clients=(
+            args.min_eval_clients if args.min_eval_clients else args.number_clients // 2
+        ),
+        min_available_clients=args.min_avail_clients,  # Wait until all 10 clients are available
+        evaluate_metrics_aggregation_fn=weighted_average,  # <-- pass the metric aggregation function
+        initial_parameters=ndarrays_to_parameters(
+            get_parameters2(central)
+        ),  # prevents Flower from asking one of the clients for the initial parameters
+        evaluate_fn=(
+            None if args.he else evaluate2
+        ),  # Pass the evaluation function for the server side
+        on_fit_config_fn=get_on_fit_config_fn(
+            epoch=args.max_epochs, lr=args.lr, batch_size=args.batch_size
+        ),  # Pass the fit_config function
+        context_client=server_context,
+    )

@@ -137,17 +137,61 @@ dmypy.json
 *.csv
 *.DS_Store
 /docs/source/stub/
-data/
 *.idea
 *.png
 test_client.py
 test_server.py
 run-pytorch-data.py
 *.pt
+
+# Model checkpoints and weights
+*.pth
+*.ckpt
+*.h5
+*.safetensors
+
+# Results and outputs
 results/
+output/
+outputs/
+
+# CIFAR-10 dataset (downloaded)
+data/cifar/cifar-10-batches-py/
+data/cifar/cifar-10-python.tar.gz
+
+# Pickle files
 *.pkl
 
+# Benchmark results (optional: remove if you want to track them)
+benchmark.json
+benchmark_*.json
+
+# Confusion matrices and ROC curves
+confusion_matrix*.png
+roc_curve*.png
+
+# Training graphs
+*_loss.png
+*_accuracy.png
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*~
+
+# Ray/Flower distributed logs
+/tmp/ray/
+.ray/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Allow keeping specific data directory structure
 !/data/
-!/secret.pkl
-!/server.pkl
-!/server_key.pkl
+!/data/cifar/
+!/data/cifar/.gitkeep
+
+# Allow example/template keys if needed
+# !/example_keys/

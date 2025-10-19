@@ -1,5 +1,20 @@
-# Secure FL applied to medical imaging with fully homomorphic encryption
-This GitHub contains the code used to run the experiments presented in a scientific paper (to be published very soon) and a [presentation given at Flower Summit 2023](https://youtu.be/pAvex7tpq2w?si=_sOmVMjiyA3cI0E5).
+# Secure FL applied to medical imaging with fully homomorphic encryption and zero-knowledge proofs
+
+This repository contains code for secure federated learning (FL) experiments with support for:
+- **Baseline FL**: Standard federated learning without cryptographic protection
+- **Homomorphic Encryption (HE)**: Using TenSEAL for encrypted parameter aggregation
+- **Zero-Knowledge Proofs (ZKP)**: Using Pedersen commitments for parameter verification
+
+The code was used for experiments presented in a scientific paper (to be published very soon) and a [presentation given at Flower Summit 2023](https://youtu.be/pAvex7tpq2w?si=_sOmVMjiyA3cI0E5).
+
+## 🆕 New Features
+
+- ✅ **Zero-Knowledge Proof support** for privacy-preserving parameter verification
+- ✅ **Performance benchmarking** for comparing Baseline vs HE vs ZKP
+- ✅ **Automated comparison script** to run all three modes and generate visualizations
+- ✅ **Detailed metrics tracking** (timing, memory, communication overhead)
+
+**See [ZKP_GUIDE.md](ZKP_GUIDE.md) for comprehensive documentation on ZKP and performance comparison.**
 ## Configure an environment
 1. Creating an environment
     ```
@@ -55,6 +70,69 @@ python simulation.py simulation --data_path data/ --dataset cifar --yaml_path ./
    ```
    python main_client.py client --data_path data/ --dataset cifar --seed 42 --num_workers 0 --max_epochs 5 --batch_size 32 --length 32 --split 10 --device mps --number_clients 3 --save_results results/FL/ --matrix_path confusion_matrix2.png --roc_path roc2.png --id_client 0
    ```
+
+## To use Zero-Knowledge Proofs (ZKP)
+
+ZKP provides an alternative to HE for privacy-preserving FL with different performance characteristics:
+
+1. **Generate ZKP parameters** (one-time setup):
+   ```bash
+   python create_zkp_params.py
+   ```
+   This creates `zkp_params.pkl` with cryptographic parameters (Pedersen commitment scheme).
+
+2. **Run with ZKP**:
+   ```bash
+   # Simulation
+   python simulation.py simulation --zkp --zkp_params zkp_params.pkl \
+     --data_path data/ --dataset cifar --number_clients 4 --rounds 2
+
+   # Server (for client-server mode)
+   python main_server.py server --zkp --zkp_params zkp_params.pkl \
+     --data_path data/ --dataset cifar --number_clients 3 --rounds 2
+
+   # Client (for client-server mode)
+   python main_client.py client --zkp --zkp_params zkp_params.pkl \
+     --data_path data/ --dataset cifar --id_client 0
+   ```
+
+**Note**: Unlike HE, ZKP uses the same parameters for both client and server.
+
+## Performance Comparison: Baseline vs HE vs ZKP
+
+Compare all three methods automatically:
+
+```bash
+# Quick comparison
+python compare_methods.py \
+  --modes baseline,he,zkp \
+  --number_clients 4 \
+  --rounds 2 \
+  --output_dir ./results/comparison
+
+# This will:
+# - Run experiments with all three modes
+# - Generate comparison plots
+# - Save detailed benchmarks
+# - Print performance summary
+```
+
+### Enable Benchmarking
+
+Add `--benchmark` to any experiment to track performance metrics:
+
+```bash
+python simulation.py simulation --benchmark --zkp \
+  --data_path data/ --dataset cifar --number_clients 4 --rounds 2
+```
+
+Metrics tracked:
+- Timing (training, aggregation, crypto operations)
+- Memory usage (peak client/server)
+- Communication overhead (upload/download sizes)
+- Cryptographic overhead (encryption, proofs)
+
+**For detailed documentation, see [ZKP_GUIDE.md](ZKP_GUIDE.md)**
 
 ## To use the homomorphic encryption
 If you have the TenSEAL private/public key combination, you can use homomorphic encryption by adding the command `--he` at client and server sites. 

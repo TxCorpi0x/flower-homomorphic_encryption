@@ -12,6 +12,7 @@ from functools import reduce
 
 # /////////////////////// Homomorphic Encryption \\\\\\\\\\\\\\\\\\\\\\\\\\
 
+
 def context():
     """
     This function is used to create the context of the homomorphic encryption:
@@ -23,11 +24,13 @@ def context():
         ts.SCHEME_TYPE.CKKS,
         poly_modulus_degree=8192,
         # This means that the coefficient modulus will contain 4 primes of 60 bits, 40 bits, 40 bits, and 60 bits.
-        coeff_mod_bit_sizes=[60, 40, 40, 60]
+        coeff_mod_bit_sizes=[60, 40, 40, 60],
     )
 
     cont.generate_galois_keys()  # You can create the Galois keys by calling generate_galois_keys
-    cont.global_scale = 2 ** 40  # global_scale: the scaling factor, here set to 2**40 (same that pow(2, 40))
+    cont.global_scale = (
+        2**40
+    )  # global_scale: the scaling factor, here set to 2**40 (same that pow(2, 40))
     return cont
 
 
@@ -38,6 +41,7 @@ class Layer:
     :param name_layer: the name of the layer
     :param weight: the weights of the layer
     """
+
     def __init__(self, name_layer, weight):
         self.name = name_layer
         self.weight_array = weight
@@ -164,6 +168,7 @@ class CryptedLayer(Layer):
     :param weight: the crypted weights of the layer
     :param contexte: the context of the encryption
     """
+
     def __init__(self, name_layer, weight, contexte=None):
         super(CryptedLayer, self).__init__(name_layer, weight)
         if type(weight) == ts.tensors.CKKSTensor or type(weight) == bytes:
@@ -264,7 +269,11 @@ class CryptedLayer(Layer):
 
         :return: the decrypted weights of the layer in the form of a list of weights
         """
-        return self.weight_array.decrypt(sk).tolist() if sk else self.weight_array.decrypt().tolist()
+        return (
+            self.weight_array.decrypt(sk).tolist()
+            if sk
+            else self.weight_array.decrypt().tolist()
+        )
 
     def serialize(self):
         """
@@ -286,7 +295,7 @@ def crypte(client_w, context_c):
     encrypted = []
     for name_layer, weight_array in client_w.items():
         start_time = time.time()
-        if name_layer == 'fc3.weight':
+        if name_layer == "fc3.weight":
             encrypted.append(CryptedLayer(name_layer, weight_array, context_c))
 
         else:
@@ -306,7 +315,7 @@ def read_query(file_path):
     :return: the query and the context
     """
     if os.path.exists(file_path):
-        with open(file_path, 'rb') as file:
+        with open(file_path, "rb") as file:
             """
             # pickle.load(f)  # load to read file object
 
@@ -331,7 +340,7 @@ def write_query(file_path, client_query):
 
     :param client_query: the query to write
     """
-    with open(file_path, 'wb') as file:  # 'ab' to add existing file
+    with open(file_path, "wb") as file:  # 'ab' to add existing file
         encode_str = pickle.dumps(client_query)
         file.write(encode_str)
 
@@ -365,7 +374,10 @@ def deserialized_model(client_query, ctx):
     :param ctx: the context (if the model is crypted)
     :return: the model with the weights in the correct format
     """
-    return [deserialized_layer(name_layer, weight_array, ctx) for name_layer, weight_array in client_query.items()]
+    return [
+        deserialized_layer(name_layer, weight_array, ctx)
+        for name_layer, weight_array in client_query.items()
+    ]
 
 
 # Redefine the aggregate function (defined in Flower)
@@ -383,7 +395,189 @@ def aggregate_custom(results: List[Tuple[NDArrays, int]]) -> NDArrays:
     ]
     # Compute average weights of each layer
     weights_prime: NDArrays = [
-        reduce(np.add, layer_updates) * (1/num_examples_total)
+        reduce(np.add, layer_updates) * (1 / num_examples_total)
         for layer_updates in zip(*weighted_weights)
     ]
     return weights_prime
+
+
+# /////////////////////// Differential Privacy \\\\\\\\\\\\\\\\\\\\\\\\\\
+
+
+class DifferentialPrivacyParams:
+    """
+    Parameters for Differential Privacy mechanism.
+
+    Args:
+        epsilon: Privacy budget (smaller = more private, typical: 0.1-10)
+        delta: Probability of privacy breach (typical: 1e-5)
+        noise_multiplier: Multiplier for noise scale (auto-computed from epsilon/delta)
+        max_grad_norm: Maximum gradient norm for clipping (typical: 1.0)
+        mechanism: Noise mechanism ('gaussian' or 'laplace')
+    """
+
+    def __init__(
+        self,
+        epsilon: float = 1.0,
+        delta: float = 1e-5,
+        noise_multiplier: float = None,
+        max_grad_norm: float = 1.0,
+        mechanism: str = "gaussian",
+    ):
+        self.epsilon = epsilon
+        self.delta = delta
+        self.max_grad_norm = max_grad_norm
+        self.mechanism = mechanism
+
+        # Auto-compute noise multiplier if not provided
+        if noise_multiplier is None:
+            # Using RDP accountant approximation
+            self.noise_multiplier = np.sqrt(2 * np.log(1.25 / delta)) / epsilon
+        else:
+            self.noise_multiplier = noise_multiplier
+
+    def to_dict(self):
+        """Convert parameters to dictionary."""
+        return {
+            "epsilon": self.epsilon,
+            "delta": self.delta,
+            "noise_multiplier": self.noise_multiplier,
+            "max_grad_norm": self.max_grad_norm,
+            "mechanism": self.mechanism,
+        }
+
+    @classmethod
+    def from_dict(cls, params_dict):
+        """Create parameters from dictionary."""
+        return cls(**params_dict)
+
+
+def clip_gradients(parameters: NDArrays, max_norm: float) -> Tuple[NDArrays, float]:
+    """
+    Clip gradients to maximum L2 norm.
+
+    Args:
+        parameters: List of parameter arrays (gradients)
+        max_norm: Maximum L2 norm
+
+    Returns:
+        Clipped parameters and the actual norm before clipping
+    """
+    # Compute global L2 norm across all parameters
+    total_norm = np.sqrt(sum(np.sum(p**2) for p in parameters))
+
+    # Clip if necessary
+    clip_coef = max_norm / (total_norm + 1e-6)
+    if clip_coef < 1:
+        clipped = [p * clip_coef for p in parameters]
+    else:
+        clipped = parameters
+
+    return clipped, float(total_norm)
+
+
+def add_gaussian_noise(
+    parameters: NDArrays, noise_scale: float, sensitivity: float = 1.0
+) -> NDArrays:
+    """
+    Add Gaussian noise to parameters for differential privacy.
+
+    Args:
+        parameters: List of parameter arrays
+        noise_scale: Scale of noise (sigma = noise_scale * sensitivity)
+        sensitivity: Sensitivity of the function (typically max_grad_norm)
+
+    Returns:
+        Parameters with added noise
+    """
+    sigma = noise_scale * sensitivity
+    noisy_params = []
+
+    for param in parameters:
+        noise = np.random.normal(0, sigma, param.shape).astype(param.dtype)
+        noisy_params.append(param + noise)
+
+    return noisy_params
+
+
+def add_laplace_noise(
+    parameters: NDArrays, noise_scale: float, sensitivity: float = 1.0
+) -> NDArrays:
+    """
+    Add Laplace noise to parameters for differential privacy.
+
+    Args:
+        parameters: List of parameter arrays
+        noise_scale: Scale of noise (b = sensitivity / epsilon)
+        sensitivity: Sensitivity of the function (typically max_grad_norm)
+
+    Returns:
+        Parameters with added noise
+    """
+    scale = sensitivity / noise_scale if noise_scale > 0 else 0
+    noisy_params = []
+
+    for param in parameters:
+        noise = np.random.laplace(0, scale, param.shape).astype(param.dtype)
+        noisy_params.append(param + noise)
+
+    return noisy_params
+
+
+def apply_differential_privacy(
+    parameters: NDArrays, dp_params: DifferentialPrivacyParams, clip_norm: bool = True
+) -> Tuple[NDArrays, dict]:
+    """
+    Apply differential privacy to model parameters.
+
+    Args:
+        parameters: List of parameter arrays
+        dp_params: Differential privacy parameters
+        clip_norm: Whether to clip gradients first
+
+    Returns:
+        DP-protected parameters and statistics dictionary
+    """
+    stats = {}
+
+    # Step 1: Clip gradients
+    if clip_norm:
+        clipped_params, original_norm = clip_gradients(
+            parameters, dp_params.max_grad_norm
+        )
+        stats["original_norm"] = original_norm
+        stats["clipped"] = original_norm > dp_params.max_grad_norm
+    else:
+        clipped_params = parameters
+        stats["clipped"] = False
+
+    # Step 2: Add noise
+    if dp_params.mechanism == "gaussian":
+        noisy_params = add_gaussian_noise(
+            clipped_params, dp_params.noise_multiplier, dp_params.max_grad_norm
+        )
+    elif dp_params.mechanism == "laplace":
+        noisy_params = add_laplace_noise(
+            clipped_params, dp_params.epsilon, dp_params.max_grad_norm
+        )
+    else:
+        raise ValueError(f"Unknown DP mechanism: {dp_params.mechanism}")
+
+    stats["noise_multiplier"] = dp_params.noise_multiplier
+    stats["epsilon"] = dp_params.epsilon
+    stats["delta"] = dp_params.delta
+
+    return noisy_params, stats
+
+
+def save_dp_params(params: DifferentialPrivacyParams, filepath: str):
+    """Save DP parameters to file."""
+    with open(filepath, "wb") as f:
+        pickle.dump(params.to_dict(), f)
+
+
+def load_dp_params(filepath: str) -> DifferentialPrivacyParams:
+    """Load DP parameters from file."""
+    with open(filepath, "rb") as f:
+        params_dict = pickle.load(f)
+    return DifferentialPrivacyParams.from_dict(params_dict)
