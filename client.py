@@ -1,6 +1,6 @@
 import torch.nn.functional
 import flwr as fl
-from going_modular import *
+from core import *
 
 """
 Script to define the client side of the federated learning pipeline with Flower.
@@ -33,8 +33,22 @@ class FlowerClient(fl.client.NumPyClient):
         context_client: context client (tenseal.context.Context)
     """
 
-    def __init__(self, cid, net, trainloader, valloader, device, batch_size, save_results, matrix_path, roc_path,
-                 yaml_path, he, classes, context_client):
+    def __init__(
+        self,
+        cid,
+        net,
+        trainloader,
+        valloader,
+        device,
+        batch_size,
+        save_results,
+        matrix_path,
+        roc_path,
+        yaml_path,
+        he,
+        classes,
+        context_client,
+    ):
 
         # Initialize the client
         self.net = net
@@ -79,23 +93,29 @@ class FlowerClient(fl.client.NumPyClient):
             parameters: parameters (list)
         """
         # Read values from config
-        server_round = config['server_round']
-        local_epochs = config['local_epochs']
+        server_round = config["server_round"]
+        local_epochs = config["local_epochs"]
         lr = float(config["learning_rate"])
 
         # Use values provided by the config
-        print(f'[Client {self.cid}, round {server_round}] fit, config: {config}')
+        print(f"[Client {self.cid}, round {server_round}] fit, config: {config}")
 
         # Update local model parameters
         set_parameters(self.net, parameters, self.context_client)
 
         criterion = torch.nn.CrossEntropyLoss()
-        optimizer = torch.optim.SGD(self.net.parameters(), lr=lr,
-                                    momentum=0.9)
+        optimizer = torch.optim.SGD(self.net.parameters(), lr=lr, momentum=0.9)
 
         # Start training
-        results = engine.train(self.net, self.trainloader, self.valloader, optimizer=optimizer, loss_fn=criterion,
-                               epochs=local_epochs, device=self.device)
+        results = engine.train(
+            self.net,
+            self.trainloader,
+            self.valloader,
+            optimizer=optimizer,
+            loss_fn=criterion,
+            epochs=local_epochs,
+            device=self.device,
+        )
 
         # Save results
         if self.save_results:
@@ -124,25 +144,48 @@ class FlowerClient(fl.client.NumPyClient):
         set_parameters(self.net, parameters, self.context_client)
 
         # Evaluate global model parameters on the local test data
-        loss, accuracy, y_pred, y_true, y_proba = engine.test(self.net, self.valloader,
-                                                              loss_fn=torch.nn.CrossEntropyLoss(), device=self.device)
+        loss, accuracy, y_pred, y_true, y_proba = engine.test(
+            self.net,
+            self.valloader,
+            loss_fn=torch.nn.CrossEntropyLoss(),
+            device=self.device,
+        )
 
         if self.save_results:
             os.makedirs(self.save_results, exist_ok=True)
             if self.matrix_path:
-                save_matrix(y_true, y_pred, self.save_results + self.matrix_path, self.classes)
+                save_matrix(
+                    y_true, y_pred, self.save_results + self.matrix_path, self.classes
+                )
 
             if self.roc_path:
-                save_roc(y_true, y_proba, self.save_results + self.roc_path, len(self.classes))
+                save_roc(
+                    y_true,
+                    y_proba,
+                    self.save_results + self.roc_path,
+                    len(self.classes),
+                )
         # Return results, including the custom accuracy metric
         return float(loss), len(self.valloader), {"accuracy": float(accuracy)}
 
 
 # The client-side execution (training, evaluation) from the server-side
-def client_common(cid: str,
-                  model_save: str, path_yaml: str, path_roc: str, results_save: str, path_matrix: str,
-                  batch_size: str, trainloaders, valloaders, DEVICE, CLASSES,
-                  he=False, secret_path="", server_path=""):
+def client_common(
+    cid: str,
+    model_save: str,
+    path_yaml: str,
+    path_roc: str,
+    results_save: str,
+    path_matrix: str,
+    batch_size: str,
+    trainloaders,
+    valloaders,
+    DEVICE,
+    CLASSES,
+    he=False,
+    secret_path="",
+    server_path="",
+):
     """
     args:
         cid: client id (str)
@@ -180,7 +223,7 @@ def client_common(cid: str,
         print("Run with homomorphic encryption")
         if os.path.exists(secret_path):
             # To get the existing public/private keys combination
-            with open(secret_path, 'rb') as f:
+            with open(secret_path, "rb") as f:
                 query = pickle.load(f)
 
             context_client = ts.context_from(query["contexte"])
@@ -188,8 +231,10 @@ def client_common(cid: str,
         else:
             # To create the public/private keys combination
             context_client = security.context()
-            with open(secret_path, 'wb') as f:  # 'ab' to add existing file
-                encode = pickle.dumps({"contexte": context_client.serialize(save_secret_key=True)})
+            with open(secret_path, "wb") as f:  # 'ab' to add existing file
+                encode = pickle.dumps(
+                    {"contexte": context_client.serialize(save_secret_key=True)}
+                )
                 f.write(encode)
 
         secret_key = context_client.secret_key()
@@ -201,7 +246,7 @@ def client_common(cid: str,
     # to get the trained model and the trained parameters (optimizer, metrics, ...)
     if os.path.exists(model_save):
         print(" To get the checkpoint")
-        checkpoint = torch.load(model_save, map_location=DEVICE)['model_state_dict']
+        checkpoint = torch.load(model_save, map_location=DEVICE)["model_state_dict"]
         if he:
             print("to decrypt model")
             # To decrypt the parameters with the private key
@@ -211,13 +256,27 @@ def client_common(cid: str,
                 print(name)
                 # To decrypt the parameters with the private key
                 checkpoint[name] = torch.tensor(
-                    security.deserialized_layer(name, server_query[name], server_context).decrypt(secret_key)
+                    security.deserialized_layer(
+                        name, server_query[name], server_context
+                    ).decrypt(secret_key)
                 )
 
         # Update network with the aggregated results
         net.load_state_dict(checkpoint)
 
     # Create a  single Flower client representing a single organization
-    return FlowerClient(cid, net, trainloader, valloader, device=DEVICE, batch_size=batch_size,
-                        matrix_path=path_matrix, roc_path=path_roc, save_results=results_save, yaml_path=path_yaml,
-                        he=he, context_client=context_client, classes=CLASSES)
+    return FlowerClient(
+        cid,
+        net,
+        trainloader,
+        valloader,
+        device=DEVICE,
+        batch_size=batch_size,
+        matrix_path=path_matrix,
+        roc_path=path_roc,
+        save_results=results_save,
+        yaml_path=path_yaml,
+        he=he,
+        context_client=context_client,
+        classes=CLASSES,
+    )

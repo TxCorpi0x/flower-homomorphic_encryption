@@ -25,11 +25,11 @@ This GitHub contains the code used to run the experiments presented in a scienti
    - If folder where put the datasets (for example called `data`) doesn't exist : create this folder and subfolder with the name of the specific dataset (example `cifar`): `./data/cifar`
    - In data, you have all datasets and in a specific dataset you have train and test folder: `./data/cifar/train/` 
    - If you have a specific dataset for the validation then addi the path to the folder with this command : `--data_path_val data/cifar/val` 
-   - To create train and test folder : run in python console the `create_files_train_test` function from `going_modular/common.py`.
-   - Open `going/modular/data_setup.py` :
+   - To create train and test folder : run in python console the `create_files_train_test` function from `core/common.py`.
+   - Open `core/data_setup.py` :
      - Add normalize values specified to the dataset in the `NORMALIZE_DICT`
      - If the dataset comes from the torchvision library, add a condition similar to that of CIFAR in `load_datasets` function
-   - Open `going/modular/common.py` and add condition similar to the other datasets in `classes_string`
+   - Open `core/common.py` and add condition similar to the other datasets in `classes_string`
    - When you want to run an algorithme, add the validation path if you have a specific folder for this (None by default): --data_path_val ./data/histo/val
 ## Classic classifier (centralized training)
 ### Launch the training
