@@ -1,4 +1,5 @@
 from typing import List, Tuple, cast
+from typing import Dict, Any
 import numpy as np
 import time
 import os
@@ -355,6 +356,12 @@ def deserialized_layer(name_layer, weight_array, ctx):
     :param ctx: the context (if the layer is crypted)
     :return: the object Layer or CryptedLayer with the weights of the layer in the correct format
     """
+    # Handle serialized TenSEAL tensors (as uint8 numpy arrays from gRPC transport)
+    if isinstance(weight_array, np.ndarray) and weight_array.dtype == np.uint8:
+        # Convert uint8 array back to bytes and deserialize
+        weight_bytes = weight_array.tobytes()
+        return CryptedLayer(name_layer, ts.ckks_tensor_from(ctx, weight_bytes), ctx)
+
     if type(weight_array) == bytes:
         return CryptedLayer(name_layer, ts.ckks_tensor_from(ctx, weight_array), ctx)
 
@@ -581,3 +588,75 @@ def load_dp_params(filepath: str) -> DifferentialPrivacyParams:
     with open(filepath, "rb") as f:
         params_dict = pickle.load(f)
     return DifferentialPrivacyParams.from_dict(params_dict)
+
+
+# /////////////////////// Concrete-ML (simulation helper) \\\\\\\\\\\\\
+
+from concrete.ml.quantization import QuantizedArray
+
+
+def _concrete_quantize(arr: np.ndarray, n_bits: int = 8) -> np.ndarray:
+    """
+    Use Concrete-ML's QuantizedArray for realistic quantization.
+
+    Args:
+        arr: Input numpy array
+        n_bits: Number of bits for quantization (default: 8)
+
+    Returns:
+        Dequantized float32 array
+    """
+    if arr.size == 0:
+        return arr.astype(np.float32, copy=False)
+
+    # Flatten for quantization, then reshape back
+    orig_shape = arr.shape
+    arr_flat = arr.flatten()
+
+    # Create QuantizedArray with specified bit-width
+    # is_signed=True for symmetric quantization around zero
+    qarray = QuantizedArray(
+        n_bits=n_bits,
+        values=arr_flat,
+        is_signed=True,
+    )
+
+    # Quantize and dequantize to simulate the FHE preprocessing step
+    quantized = qarray.qvalues  # Integer representation
+    dequantized = qarray.dequant()  # Back to float
+
+    return dequantized.reshape(orig_shape).astype(np.float32, copy=False)
+
+
+def simulate_concrete_encrypt(
+    state_dict: Dict[str, Any], n_bits: int = 8
+) -> List[np.ndarray]:
+    """
+    Simulate Concrete-ML style preprocessing/encryption work by performing
+    per-tensor quantization + dequantization using Concrete-ML's QuantizedArray.
+
+    This is used for timing/benchmark purposes in simulation mode and returns
+    numpy arrays suitable for transport in the current Flower setup.
+
+    Args:
+        state_dict: Model state dictionary (PyTorch tensors)
+        n_bits: Number of bits for quantization (default: 8)
+
+    Returns:
+        List of quantized/dequantized numpy arrays
+
+    Note: This does not perform FHE circuit compilation or encrypted inference.
+    Real Concrete-ML FHE requires compiling an inference circuit which is
+    out-of-scope for FL parameter transport.
+
+    Raises:
+        ImportError: If concrete-ml is not installed
+    """
+    simulated = []
+
+    for _, tensor in state_dict.items():
+        np_arr = tensor.detach().cpu().numpy()
+        deq = _concrete_quantize(np_arr, n_bits=n_bits)
+        simulated.append(deq)
+
+    return simulated

@@ -12,11 +12,14 @@ if __name__ == "__main__":
     benchmark_metrics = None
     if args.benchmark:
         mode = "he" if args.he else ("zkp" if args.zkp else "baseline")
-        benchmark_metrics = init_benchmark(mode, 1, args.rounds)  # Single client
+        # Client doesn't know rounds count in non-simulation mode, use default
+        rounds = getattr(args, "rounds", 1)
+        benchmark_metrics = init_benchmark(mode, 1, rounds)  # Single client
 
     start_time = time.time()
+    server_address = os.environ.get("FL_SERVER_ADDRESS", "[::]:8080")
     fl.client.start_numpy_client(
-        server_address="[::]:8080",
+        server_address=server_address,
         client=client_common(
             args.id_client,
             args.model_save,
@@ -30,6 +33,7 @@ if __name__ == "__main__":
             DEVICE,
             CLASSES,
             args.he,
+            args.he_backend if hasattr(args, "he_backend") else "tenseal",
             args.path_keys,
             args.path_crypted,
             args.zkp,

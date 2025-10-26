@@ -1,6 +1,6 @@
 from server import *
 import os
-from core.benchmark import save_benchmark, print_benchmark
+from core.benchmark import init_benchmark, save_benchmark, print_benchmark
 
 """
 Script to start the server side of the federated learning pipeline with Flower.
@@ -8,10 +8,21 @@ Script to start the server side of the federated learning pipeline with Flower.
 
 if __name__ == "__main__":
     print("start server")
+    # Initialize benchmarking if enabled
+    if args.benchmark:
+        mode = (
+            "he" if args.he else ("zkp" if getattr(args, "zkp", False) else "baseline")
+        )
+        try:
+            init_benchmark(mode, args.number_clients, args.rounds)
+        except Exception:
+            # Fallback with generic defaults
+            init_benchmark(mode, 1, args.rounds)
     start_time = time.time()
 
+    server_address = os.environ.get("FL_SERVER_ADDRESS", "0.0.0.0:8080")
     fl.server.start_server(
-        server_address="0.0.0.0:8080",
+        server_address=server_address,
         config=fl.server.ServerConfig(num_rounds=args.rounds),
         strategy=strategy,
     )

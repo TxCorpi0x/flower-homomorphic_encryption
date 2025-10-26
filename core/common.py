@@ -1,4 +1,5 @@
 import argparse
+import os
 import random
 import torch
 import shutil
@@ -187,6 +188,13 @@ def parsing(description="PyTorch ImageNet Training"):
         action="store_true",
         dest="he",
         help="True if we want to use the homomorphic encryption (by default : False)",
+    )
+    parent_parser.add_argument(
+        "--he_backend",
+        type=str,
+        choices=["tenseal", "concrete"],
+        default="tenseal",
+        help="HE library to use when --he is enabled: 'tenseal' (default) or 'concrete' (simulated)",
     )
     parent_parser.add_argument(
         "--zkp",
@@ -521,7 +529,9 @@ def plot_graph(
         plt.savefig(path)
 
 
-def get_parameters2(net, context_client=None, zkp_context=None) -> List[np.ndarray]:
+def get_parameters2(
+    net, context_client=None, zkp_context=None, he_backend: str = "tenseal"
+) -> List[np.ndarray]:
     """
     Get the parameters of the network
     :param net: network to get the parameters (weights and biases)
@@ -534,20 +544,41 @@ def get_parameters2(net, context_client=None, zkp_context=None) -> List[np.ndarr
         zkp_layers = zkp_commit_model(net.state_dict(), zkp_context)
         return zkp_layers
 
-    elif context_client:
-        # Crypte of the model trained at the client for a given round (after each round the model is aggregated between
-        # clients)
-        encrypted_tensor = crypte(
-            net.state_dict(), context_client
-        )  # list of encrypted layers (weights and biases)
-
-        return [layer.get_weight() for layer in encrypted_tensor]
+    elif context_client and he_backend == "tenseal":
+        # Encrypt with TenSEAL
+        encrypted_tensor = crypte(net.state_dict(), context_client)
+        # Serialize TenSEAL tensors to bytes for transport over gRPC
+        # Convert bytes to numpy uint8 arrays (compatible with Flower's serialization)
+        serialized_params = []
+        for layer in encrypted_tensor:
+            weight = layer.get_weight()
+            if hasattr(weight, "serialize"):  # TenSEAL CKKSTensor
+                # Serialize to bytes and convert to numpy uint8 array
+                serialized_bytes = weight.serialize()
+                # Store as numpy array of bytes (uint8)
+                serialized_params.append(
+                    np.frombuffer(serialized_bytes, dtype=np.uint8)
+                )
+            else:
+                # Plain numpy array (not encrypted)
+                serialized_params.append(weight)
+        return serialized_params
+    elif he_backend == "concrete":
+        # In Concrete-ML mode, we only simulate encryption work (quantization) and
+        # return plain numpy arrays for transport to stay compatible with Flower.
+        # This path is primarily for FL simulation and benchmarking.
+        _ = simulate_concrete_encrypt(net.state_dict())
+        return [val.cpu().numpy() for _, val in net.state_dict().items()]
 
     return [val.cpu().numpy() for _, val in net.state_dict().items()]
 
 
 def set_parameters(
-    net, parameters: List[np.ndarray], context_client=None, zkp_context=None
+    net,
+    parameters: List[np.ndarray],
+    context_client=None,
+    zkp_context=None,
+    he_backend: str = "tenseal",
 ):
     """
     Update the parameters of the network with the given parameters (weights and biases)
@@ -567,7 +598,7 @@ def set_parameters(
         return
 
     params_dict = zip(net.state_dict().keys(), parameters)
-    if context_client:
+    if context_client and he_backend == "tenseal":
         secret_key = context_client.secret_key()
         dico = {k: deserialized_layer(k, v, context_client) for k, v in params_dict}
 

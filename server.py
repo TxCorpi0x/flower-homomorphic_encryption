@@ -17,6 +17,9 @@ from flwr.common import (
     ndarrays_to_parameters,
     parameters_to_ndarrays,
 )
+import tenseal as ts
+import numpy as np
+import os
 
 from federated import *
 from core.security import aggregate_custom
@@ -291,18 +294,76 @@ class FedCustom(fl.server.strategy.Strategy):
         if not self.accept_failures and failures:
             return None, {}
 
-        # Convert results parameters --> array matrix
-        # Detect if we're in ZKP mode (clients send numpy but we benchmark)
-        weights_results = [
-            (
-                parameters_to_ndarrays(fit_res.parameters),
-                fit_res.num_examples,
+        # Check if we're in real HE mode (non-simulation with encrypted parameters)
+        bm = get_benchmark()
+        sim_mode = os.environ.get("FL_SIMULATION", "0") == "1"
+
+        if self.context_client and args.he_backend == "tenseal" and not sim_mode:
+            # Real HE (non-simulation): aggregate under encryption using public context
+            print(
+                f"[Round {server_round}] Aggregating encrypted parameters from {len(results)} clients..."
             )
-            for _, fit_res in results
-        ]
+
+            # Reconstruct encrypted tensors for each client (without secret key)
+            enc_results = []  # List[Tuple[List[Union[np.ndarray, ts.CKKSTensor]], int]]
+            for client_proxy, fit_res in results:
+                received = parameters_to_ndarrays(fit_res.parameters)
+                tensors = []
+                for arr in received:
+                    # Encrypted tensors are transported as uint8 numpy arrays
+                    if isinstance(arr, np.ndarray) and arr.dtype == np.uint8:
+                        enc_bytes = arr.tobytes()
+                        tensors.append(
+                            ts.ckks_tensor_from(self.context_client, enc_bytes)
+                        )
+                    else:
+                        # Plain numpy array (should not happen in real HE runs, but keep compatibility)
+                        tensors.append(arr)
+                enc_results.append((tensors, fit_res.num_examples))
+
+            # Weighted average under encryption
+            num_examples_total = sum(num for _, num in enc_results)
+            aggregated = []
+            num_layers = len(enc_results[0][0])
+
+            for layer_idx in range(num_layers):
+                acc = None
+                for tensors, num in enc_results:
+                    w = tensors[layer_idx]
+                    term = w * num  # works for both numpy arrays and CKKSTensor
+                    acc = term if acc is None else acc + term
+                avg = acc * (1.0 / num_examples_total)
+
+                # Serialize encrypted tensors back to uint8 for transport; keep numpy arrays as-is
+                if hasattr(avg, "serialize"):
+                    serialized = avg.serialize()
+                    aggregated.append(np.frombuffer(serialized, dtype=np.uint8))
+                else:
+                    aggregated.append(avg)
+
+            # Package aggregated parameters
+            with BenchmarkTimer(bm, "server_aggregate"):
+                parameters_aggregated = ndarrays_to_parameters(aggregated)
+            if bm is not None:
+                bm.add_server_memory(get_memory_usage_mb())
+
+            metrics_aggregated = {}
+            if self.fit_metrics_aggregation_fn:
+                fit_metrics = [(res.num_examples, res.metrics) for _, res in results]
+                metrics_aggregated = self.fit_metrics_aggregation_fn(fit_metrics)
+
+            return parameters_aggregated, metrics_aggregated
+        else:
+            # Simulation mode or non-HE: parameters are already plain numpy arrays
+            weights_results = [
+                (
+                    parameters_to_ndarrays(fit_res.parameters),
+                    fit_res.num_examples,
+                )
+                for _, fit_res in results
+            ]
 
         # Aggregate parameters using weighted average between the clients
-        bm = get_benchmark()
         with BenchmarkTimer(bm, "server_aggregate"):
             parameters_aggregated = ndarrays_to_parameters(
                 aggregate_custom(weights_results)
@@ -428,7 +489,7 @@ connected to the server.
 - `min_available_clients` must be set to a value larger
 than or equal to the values of `min_fit_clients` and `min_evaluate_clients`.
 """
-if args.he:
+if args.he and getattr(args, "he_backend", "tenseal") == "tenseal":
     print("get public key : ", args.path_public_key)
     _, server_context = security.read_query(args.path_public_key)
     server_context = ts.context_from(server_context)

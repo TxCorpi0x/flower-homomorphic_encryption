@@ -16,21 +16,242 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 from datetime import datetime
+import time
+import signal
+import sys
 
 
-def run_experiment(mode, base_args, output_dir):
-    """Run a single experiment."""
+def run_experiment_distributed(
+    mode, base_args, output_dir, result_dir, he_backend, display_mode
+):
+    """Run experiment in non-simulation mode with separate server/client processes."""
+
+    # Build common arguments (shared between server and client)
+    common_args = []
+
+    arg_mapping = {
+        "dataset": "--dataset",
+        "data_path": "--data_path",
+        "max_epochs": "--max_epochs",
+        "batch_size": "--batch_size",
+        "device": "--device",
+    }
+
+    for key, flag in arg_mapping.items():
+        if key in base_args and base_args[key] is not None and base_args[key] != "":
+            common_args.extend([flag, str(base_args[key])])
+
+    # Server-specific arguments
+    server_only_args = []
+    server_arg_mapping = {
+        "rounds": "--rounds",
+        "number_clients": "--number_clients",
+    }
+
+    for key, flag in server_arg_mapping.items():
+        if key in base_args and base_args[key] is not None and base_args[key] != "":
+            server_only_args.extend([flag, str(base_args[key])])
+
+    # Mode-specific flags
+    mode_args = []
+    if mode == "he":
+        mode_args.append("--he")
+        if he_backend:
+            mode_args.extend(["--he_backend", he_backend])
+        mode_args.extend(["--path_keys", "secret.pkl"])
+        mode_args.extend(["--path_public_key", "server_key.pkl"])
+    elif mode == "zkp":
+        mode_args.append("--zkp")
+        mode_args.extend(["--zkp_params", "zkp_params.pkl"])
+    elif mode == "dp":
+        mode_args.append("--dp")
+        mode_args.extend(["--dp_params", "dp_params.pkl"])
+
+    # Benchmarking (only if supported by the subcommand)
+    benchmark_args = ["--benchmark"]
+
+    # Start server in background
+    server_cmd = (
+        [sys.executable, "main_server.py", "server"]
+        + common_args
+        + server_only_args
+        + mode_args
+        + benchmark_args
+    )
+    print(f"Starting server: {' '.join(server_cmd)}\n")
+
+    # Use a dedicated port to avoid conflicts and pass it via env
+    port_map = {"baseline": 8081, "he": 8082, "zkp": 8083, "dp": 8084}
+    base_mode = "he" if mode == "he" else (mode if mode in port_map else "baseline")
+    server_addr = f"127.0.0.1:{port_map.get(base_mode, 8081)}"
+    env_server = os.environ.copy()
+    env_server["FL_SERVER_ADDRESS"] = server_addr
+
+    server_log_path = f"{result_dir}/server.log"
+    with open(server_log_path, "w") as server_log:
+        server_proc = subprocess.Popen(
+            server_cmd,
+            stdout=server_log,
+            stderr=subprocess.STDOUT,
+            preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+            env=env_server,
+        )
+
+    # Give server time to start
+    time.sleep(5)  # Increased from 3 to 5 seconds
+
+    # Check if server is still running
+    if server_proc.poll() is not None:
+        print(f"❌ Server failed to start! Check {server_log_path}")
+        return {
+            "mode": display_mode,
+            "success": False,
+            "exit_code": server_proc.returncode,
+            "result_dir": result_dir,
+            "benchmark": None,
+        }
+
+    print(f"✓ Server started (PID: {server_proc.pid})")
+
+    # Client-specific benchmark args (parser_ml is available for client subcommand)
+    client_benchmark_args = benchmark_args + [
+        "--save_results",
+        result_dir,
+        "--model_save",
+        f"{result_dir}/model.pt",
+    ]
+
+    # Start clients in parallel (not sequentially)
+    num_clients = base_args.get("number_clients", 2)
+    client_procs = []
+    client_log_paths = []
+
+    for cid in range(num_clients):
+        client_cmd = (
+            [sys.executable, "main_client.py", "client"]
+            + common_args
+            + mode_args
+            + client_benchmark_args
+            + ["--id_client", str(cid)]
+        )
+        print(f"Starting client {cid}... (in background)")
+
+        client_log_path = f"{result_dir}/client_{cid}.log"
+        client_log_paths.append(client_log_path)
+        client_log_file = open(client_log_path, "w")
+
+        # Ensure each client connects to the same server address
+        env_client = os.environ.copy()
+        env_client["FL_SERVER_ADDRESS"] = server_addr
+        client_proc = subprocess.Popen(
+            client_cmd,
+            stdout=client_log_file,
+            stderr=subprocess.STDOUT,
+            env=env_client,
+        )
+        client_procs.append((client_proc, client_log_file, cid))
+
+    print(f"✓ All {num_clients} clients started, waiting for completion...")
+
+    # Wait for all clients to complete
+    client_failures = 0
+    for client_proc, client_log_file, cid in client_procs:
+        try:
+            exit_code = client_proc.wait(timeout=600)  # 10 minutes per client
+            client_log_file.close()
+
+            if exit_code != 0:
+                print(f"⚠️  Client {cid} failed with exit code {exit_code}")
+                client_failures += 1
+            else:
+                print(f"✓ Client {cid} completed")
+        except subprocess.TimeoutExpired:
+            print(f"⏱️  Client {cid} timed out!")
+            client_proc.kill()
+            client_log_file.close()
+            client_failures += 1
+        except Exception as e:
+            print(f"❌ Client {cid} error: {e}")
+            client_log_file.close()
+            client_failures += 1
+
+    # Wait for server to complete (it should exit after all rounds)
+    print(f"\nWaiting for server to complete...")
+    try:
+        server_proc.wait(timeout=600)  # Increased to 10 minutes
+        print(f"✓ Server completed")
+    except subprocess.TimeoutExpired:
+        print(f"⏱️  Server timeout! Terminating...")
+        if hasattr(os, "killpg"):
+            os.killpg(os.getpgid(server_proc.pid), signal.SIGTERM)
+        else:
+            server_proc.terminate()
+        server_proc.wait(timeout=10)
+
+    # Load benchmark results (in non-simulation, aggregate from separate files)
+    benchmark_file = f"{result_dir}/benchmark.json"
+    benchmark = None
+
+    # Check if combined benchmark exists (simulation mode) or need to aggregate (non-simulation)
+    if os.path.exists(benchmark_file):
+        with open(benchmark_file, "r") as f:
+            benchmark = json.load(f)
+    else:
+        # Non-simulation: aggregate client benchmarks
+        print("Aggregating client benchmarks...")
+        client_benchmarks = []
+        for i in range(num_clients):
+            client_bench_file = f"{result_dir}/client_{i}_benchmark.json"
+            if os.path.exists(client_bench_file):
+                with open(client_bench_file, "r") as f:
+                    client_benchmarks.append(json.load(f))
+
+        if client_benchmarks:
+            # Create aggregated benchmark (simple merge for now)
+            benchmark = client_benchmarks[0]  # Use first client as base
+            # TODO: Proper aggregation of metrics across clients
+            print(f"✓ Aggregated {len(client_benchmarks)} client benchmarks")
+
+    success = (
+        server_proc.returncode == 0 and client_failures == 0 and benchmark is not None
+    )
+
+    print(f"{display_mode.upper()} {'✓ SUCCESS' if success else '✗ FAILED'}")
+    if client_failures > 0:
+        print(f"  ({client_failures}/{num_clients} clients failed)")
+
+    return {
+        "mode": display_mode,
+        "success": success,
+        "exit_code": server_proc.returncode,
+        "result_dir": result_dir,
+        "benchmark": benchmark,
+        "client_failures": client_failures,
+    }
+
+
+def run_experiment(mode, base_args, output_dir, he_backend=None, use_simulation=True):
+    """Run a single experiment in simulation or non-simulation mode."""
+    display_mode = mode if not he_backend else f"{mode}_{he_backend}"
     print(f"\n{'='*60}")
-    print(f"Running {mode.upper()} experiment")
+    print(
+        f"Running {display_mode.upper()} experiment ({'SIMULATION' if use_simulation else 'NON-SIMULATION'})"
+    )
     print(f"{'='*60}\n")
 
-    result_dir = f"{output_dir}/{mode}"
+    result_dir = f"{output_dir}/{display_mode}"
     os.makedirs(result_dir, exist_ok=True)
 
     # Build command - use sys.executable to get current Python
     import sys
 
-    cmd = [sys.executable, "simulation.py", "simulation"]
+    if use_simulation:
+        cmd = [sys.executable, "simulation.py", "simulation"]
+    else:
+        # Non-simulation mode: will start server and clients separately
+        return run_experiment_distributed(
+            mode, base_args, output_dir, result_dir, he_backend, display_mode
+        )
 
     # Add base arguments
     for key, value in base_args.items():
@@ -40,6 +261,8 @@ def run_experiment(mode, base_args, output_dir):
     # Mode-specific flags
     if mode == "he":
         cmd.append("--he")
+        if he_backend:
+            cmd.extend(["--he_backend", he_backend])
         cmd.extend(["--path_keys", "secret.pkl"])
         cmd.extend(["--path_public_key", "server_key.pkl"])
     elif mode == "zkp":
@@ -60,7 +283,7 @@ def run_experiment(mode, base_args, output_dir):
     start_time = datetime.now()
     env = os.environ.copy()
     env["FL_SIMULATION"] = "1"
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
     duration = (datetime.now() - start_time).total_seconds()
 
     # Save logs
@@ -82,10 +305,12 @@ def run_experiment(mode, base_args, output_dir):
                     benchmark = None
 
     success = result.returncode == 0 and benchmark is not None
-    print(f"{mode.upper()} {'✓ SUCCESS' if success else '✗ FAILED'} ({duration:.1f}s)")
+    print(
+        f"{display_mode.upper()} {'✓ SUCCESS' if success else '✗ FAILED'} ({duration:.1f}s)"
+    )
 
     return {
-        "mode": mode,
+        "mode": display_mode,
         "duration": duration,
         "exit_code": result.returncode,
         "result_dir": result_dir,
@@ -103,7 +328,14 @@ def create_plots(results, output_dir):
 
     modes = [r["mode"] for r in valid]
     benchmarks = [r["benchmark"] for r in valid]
-    colors = {"baseline": "#2ecc71", "he": "#e74c3c", "zkp": "#3498db", "dp": "#f39c12"}
+    colors = {
+        "baseline": "#2ecc71",
+        "he": "#e74c3c",
+        "he_tenseal": "#e74c3c",
+        "he_concrete": "#9b59b6",
+        "zkp": "#3498db",
+        "dp": "#f39c12",
+    }
 
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     fig.suptitle(
@@ -172,10 +404,10 @@ def create_plots(results, output_dir):
     crypto_times = []
     labels = []
     for mode, b in zip(modes, benchmarks):
-        if mode == "he" and "encryption" in b["timing"]:
+        if "he" in mode and "encryption" in b["timing"]:
             t = b["timing"]["encryption"]["total"] + b["timing"]["decryption"]["total"]
             crypto_times.append(t)
-            labels.append("HE")
+            labels.append(mode.upper().replace("_", "\n"))
         elif mode == "zkp" and "proof_generation" in b["timing"]:
             t = (
                 b["timing"]["proof_generation"]["total"]
@@ -209,17 +441,21 @@ def create_plots(results, output_dir):
     ax = axes[0, 2]
     accs = []
     for b in benchmarks:
-        if (
-            "model_quality" in b
-            and b["model_quality"]["global_val_accuracy"]["total"] > 0
-        ):
-            accs.append(b["model_quality"]["global_val_accuracy"]["max"])
-        else:
-            accs.append(0)
+        acc = 0
+        if "model_quality" in b:
+            mq = b["model_quality"]
+            # Try multiple sources (simulation vs non-simulation)
+            if mq.get("global_val_accuracy", {}).get("total", 0) > 0:
+                acc = mq["global_val_accuracy"]["max"]
+            elif mq.get("test_accuracy", {}).get("total", 0) > 0:
+                acc = mq["test_accuracy"]["max"]
+            elif mq.get("val_accuracy", {}).get("total", 0) > 0:
+                acc = mq["val_accuracy"]["max"]
+        accs.append(acc)
 
     bars = ax.bar(modes, accs, color=[colors[m] for m in modes], alpha=0.7)
     ax.set_ylabel("Accuracy (%)", fontsize=12)
-    ax.set_title("Best Global Accuracy", fontsize=13, fontweight="bold")
+    ax.set_title("Best Test/Val Accuracy", fontsize=13, fontweight="bold")
     ax.grid(axis="y", alpha=0.3)
     for bar, val in zip(bars, accs):
         if val > 0:
@@ -233,13 +469,35 @@ def create_plots(results, output_dir):
 
     # 6. Loss
     ax = axes[1, 2]
-    has_loss = all(
-        "model_quality" in b and b["model_quality"]["global_val_loss"]["total"] > 0
-        for b in benchmarks
-    )
+    # Try to find loss data from any available source
+    loss_data = []
+    for b in benchmarks:
+        if "model_quality" in b:
+            mq = b["model_quality"]
+            if mq.get("global_val_loss", {}).get("total", 0) > 0:
+                loss_data.append(
+                    {
+                        "initial": mq["global_val_loss"]["max"],
+                        "final": mq["global_val_loss"]["min"],
+                    }
+                )
+            elif mq.get("test_loss", {}).get("total", 0) > 0:
+                loss_data.append(
+                    {"initial": mq["test_loss"]["max"], "final": mq["test_loss"]["min"]}
+                )
+            elif mq.get("val_loss", {}).get("total", 0) > 0:
+                loss_data.append(
+                    {"initial": mq["val_loss"]["max"], "final": mq["val_loss"]["min"]}
+                )
+            else:
+                loss_data.append(None)
+        else:
+            loss_data.append(None)
+
+    has_loss = any(ld is not None for ld in loss_data)
     if has_loss:
-        initial = [b["model_quality"]["global_val_loss"]["max"] for b in benchmarks]
-        final = [b["model_quality"]["global_val_loss"]["min"] for b in benchmarks]
+        initial = [ld["initial"] if ld else 0 for ld in loss_data]
+        final = [ld["final"] if ld else 0 for ld in loss_data]
 
         x = np.arange(len(modes))
         width = 0.35
@@ -300,13 +558,19 @@ def print_summary(results):
             else:
                 crypto = 0
 
-            # Accuracy
+            # Accuracy - try multiple sources
             acc = 0
-            if (
-                "model_quality" in b
-                and b["model_quality"]["global_val_accuracy"]["total"] > 0
-            ):
-                acc = b["model_quality"]["global_val_accuracy"]["max"]
+            if "model_quality" in b:
+                mq = b["model_quality"]
+                # First try global_val_accuracy (server-side evaluation in simulation)
+                if mq.get("global_val_accuracy", {}).get("total", 0) > 0:
+                    acc = mq["global_val_accuracy"]["max"]
+                # Fallback to test_accuracy (client-side in non-simulation)
+                elif mq.get("test_accuracy", {}).get("total", 0) > 0:
+                    acc = mq["test_accuracy"]["max"]
+                # Fallback to val_accuracy (client validation)
+                elif mq.get("val_accuracy", {}).get("total", 0) > 0:
+                    acc = mq["val_accuracy"]["max"]
 
             print(
                 f"{mode:<10} {status:<10} {total:<10.1f} {fit:<10.3f} {crypto:<12.1f} {acc:<10.1f}"
@@ -325,7 +589,12 @@ def main():
         "--modes",
         type=str,
         default="baseline,zkp,dp",
-        help="Modes to compare (default: baseline,zkp,dp)",
+        help="Modes to compare (default: baseline,zkp,dp). Use 'he_tenseal,he_concrete' to compare HE backends.",
+    )
+    parser.add_argument(
+        "--no-simulation",
+        action="store_true",
+        help="Run in non-simulation mode with real gRPC server/client (default: use simulation mode)",
     )
     parser.add_argument(
         "--output_dir", type=str, default="./results/comparison_all_modes"
@@ -346,6 +615,9 @@ def main():
     print("FEDERATED LEARNING COMPARISON")
     print(f"{'='*80}")
     print(f"Modes: {', '.join([m.upper() for m in modes])}")
+    print(
+        f"Mode: {'NON-SIMULATION (Real gRPC)' if args.no_simulation else 'SIMULATION (Ray)'}"
+    )
     print(
         f"Config: {args.number_clients} clients, {args.rounds} rounds, {args.max_epochs} epochs/round"
     )
@@ -369,31 +641,42 @@ def main():
     }
 
     # Check prerequisites
-    if "he" in modes:
-        if not (os.path.exists("secret.pkl") and os.path.exists("server_key.pkl")):
-            print("\n⚠️  HE mode requires keys. Please run: python create_keys.py")
-            print("Skipping HE mode...")
-            modes.remove("he")
-        else:
-            print("\n⚠️  NOTE: HE mode has known issues in simulation.")
-            print(
-                "    Results may not be reliable. Consider running baseline and ZKP only."
-            )
-            response = input("Continue with HE? (y/n): ")
-            if response.lower() != "y":
-                modes.remove("he")
+    processed_modes = []
+    for mode in modes:
+        # Handle HE backend variants
+        if mode.startswith("he_"):
+            backend = mode.split("_")[1]  # tenseal or concrete
+            if not (os.path.exists("secret.pkl") and os.path.exists("server_key.pkl")):
+                print(f"\n⚠️  HE mode requires keys. Please run: python create_keys.py")
+                print(f"Skipping {mode}...")
+                continue
+            processed_modes.append(("he", backend))
+        elif mode == "he":
+            if not (os.path.exists("secret.pkl") and os.path.exists("server_key.pkl")):
+                print("\n⚠️  HE mode requires keys. Please run: python create_keys.py")
+                print("Skipping HE mode...")
+                continue
+            processed_modes.append(("he", "tenseal"))  # default to tenseal
+        elif mode == "zkp":
+            if not os.path.exists("zkp_params.pkl"):
+                print(
+                    "\n⚠️  ZKP mode requires params. Please run: python create_zkp_params.py"
+                )
+                print("Skipping ZKP mode...")
+                continue
+            processed_modes.append((mode, None))
+        elif mode == "dp":
+            if not os.path.exists("dp_params.pkl"):
+                print(
+                    "\n⚠️  DP mode requires params. Please run: python create_dp_params.py"
+                )
+                print("Skipping DP mode...")
+                continue
+            processed_modes.append((mode, None))
+        else:  # baseline
+            processed_modes.append((mode, None))
 
-    if "zkp" in modes and not os.path.exists("zkp_params.pkl"):
-        print("\n⚠️  ZKP mode requires params. Please run: python create_zkp_params.py")
-        print("Skipping ZKP mode...")
-        modes.remove("zkp")
-
-    if "dp" in modes and not os.path.exists("dp_params.pkl"):
-        print("\n⚠️  DP mode requires params. Please run: python create_dp_params.py")
-        print("Skipping DP mode...")
-        modes.remove("dp")
-
-    if len(modes) == 0:
+    if len(processed_modes) == 0:
         print("\n❌ No valid modes to run!")
         return
 
@@ -401,16 +684,22 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     results = []
 
-    for mode in modes:
+    use_simulation = not args.no_simulation
+
+    for mode, he_backend in processed_modes:
         try:
-            result = run_experiment(mode, base_args, args.output_dir)
+            result = run_experiment(
+                mode, base_args, args.output_dir, he_backend, use_simulation
+            )
             results.append(result)
         except subprocess.TimeoutExpired:
-            print(f"⏱️  {mode.upper()} timeout!")
-            results.append({"mode": mode, "success": False, "exit_code": -1})
+            display_name = mode if not he_backend else f"{mode}_{he_backend}"
+            print(f"⏱️  {display_name.upper()} timeout!")
+            results.append({"mode": display_name, "success": False, "exit_code": -1})
         except Exception as e:
-            print(f"❌ {mode.upper()} error: {e}")
-            results.append({"mode": mode, "success": False, "exit_code": -1})
+            display_name = mode if not he_backend else f"{mode}_{he_backend}"
+            print(f"❌ {display_name.upper()} error: {e}")
+            results.append({"mode": display_name, "success": False, "exit_code": -1})
 
     # Generate outputs
     if any(r["success"] for r in results):

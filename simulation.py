@@ -123,6 +123,7 @@ def client_fn(cid: str) -> FlowerClient:
         DEVICE,
         CLASSES,
         he,
+        he_backend,
         secret_path,
         server_path,
         zkp,
@@ -151,6 +152,7 @@ if __name__ == "__main__":
     path_matrix = args.matrix_path
     batch_size = args.batch_size
     he = args.he
+    he_backend = args.he_backend if hasattr(args, "he_backend") else "tenseal"
     zkp = args.zkp
     dp = args.dp
     secret_path = args.path_keys

@@ -1,4 +1,5 @@
 import torch.nn.functional
+import os
 import numpy as np
 import flwr as fl
 from core import *
@@ -47,6 +48,7 @@ class FlowerClient(fl.client.NumPyClient):
         roc_path,
         yaml_path,
         he,
+        he_backend,
         classes,
         context_client,
         zkp=False,
@@ -68,6 +70,7 @@ class FlowerClient(fl.client.NumPyClient):
         self.roc_path = roc_path
         self.yaml_path = yaml_path
         self.he = he
+        self.he_backend = he_backend
         self.classes = classes
         self.context_client = context_client
         self.zkp = zkp
@@ -105,7 +108,12 @@ class FlowerClient(fl.client.NumPyClient):
                     sim_mode = os.environ.get("FL_SIMULATION", "0") == "1"
                     if sim_mode:
                         with BenchmarkTimer(self.benchmark, "encryption"):
-                            _ = get_parameters2(self.net, self.context_client, None)
+                            _ = get_parameters2(
+                                self.net,
+                                self.context_client,
+                                None,
+                                he_backend=self.he_backend,
+                            )
                         params = [
                             val.detach().cpu().numpy().astype(np.float32, copy=False)
                             for _, val in self.net.state_dict().items()
@@ -113,7 +121,10 @@ class FlowerClient(fl.client.NumPyClient):
                     else:
                         with BenchmarkTimer(self.benchmark, "encryption"):
                             params = get_parameters2(
-                                self.net, self.context_client, None
+                                self.net,
+                                self.context_client,
+                                None,
+                                he_backend=self.he_backend,
                             )
                 elif self.dp:
                     # Get plain parameters first
@@ -134,7 +145,9 @@ class FlowerClient(fl.client.NumPyClient):
                     for _, val in self.net.state_dict().items()
                 ]
             else:
-                return get_parameters2(self.net, self.context_client, None)
+                return get_parameters2(
+                    self.net, self.context_client, None, he_backend=self.he_backend
+                )
 
     def fit(self, parameters, config):
         """
@@ -184,10 +197,17 @@ class FlowerClient(fl.client.NumPyClient):
                         [p.astype(np.float32, copy=False) for p in parameters],
                         None,
                         None,
+                        he_backend=self.he_backend,
                     )
                 else:
                     with BenchmarkTimer(self.benchmark, "decryption"):
-                        set_parameters(self.net, parameters, self.context_client, None)
+                        set_parameters(
+                            self.net,
+                            parameters,
+                            self.context_client,
+                            None,
+                            he_backend=self.he_backend,
+                        )
             else:
                 set_parameters(self.net, parameters, None, None)
         else:
@@ -254,7 +274,12 @@ class FlowerClient(fl.client.NumPyClient):
                 if sim_mode:
                     # Measure encryption cost but return numpy for transport (simulation-safe)
                     with BenchmarkTimer(self.benchmark, "encryption"):
-                        _ = get_parameters2(self.net, self.context_client, None)
+                        _ = get_parameters2(
+                            self.net,
+                            self.context_client,
+                            None,
+                            he_backend=self.he_backend,
+                        )
                         updated_params = [
                             val.detach().cpu().numpy().astype(np.float32, copy=False)
                             for _, val in self.net.state_dict().items()
@@ -262,7 +287,10 @@ class FlowerClient(fl.client.NumPyClient):
                 else:
                     with BenchmarkTimer(self.benchmark, "encryption"):
                         updated_params = get_parameters2(
-                            self.net, self.context_client, None
+                            self.net,
+                            self.context_client,
+                            None,
+                            he_backend=self.he_backend,
                         )
             elif self.dp:
                 # Get plain parameters
@@ -359,7 +387,9 @@ class FlowerClient(fl.client.NumPyClient):
                 )
             else:
                 return (
-                    get_parameters2(self.net, self.context_client, None),
+                    get_parameters2(
+                        self.net, self.context_client, None, he_backend=self.he_backend
+                    ),
                     len(self.trainloader),
                     {},
                 )
@@ -440,6 +470,7 @@ def client_common(
     DEVICE,
     CLASSES,
     he=False,
+    he_backend: str = "tenseal",
     secret_path="",
     server_path="",
     zkp=False,
@@ -514,23 +545,29 @@ def client_common(
     # Homomorphic encryption
     elif he:
         print("Run with homomorphic encryption")
-        if os.path.exists(secret_path):
-            # To get the existing public/private keys combination
-            with open(secret_path, "rb") as f:
-                query = pickle.load(f)
+        if he_backend == "tenseal":
+            if os.path.exists(secret_path):
+                # To get the existing public/private keys combination
+                with open(secret_path, "rb") as f:
+                    query = pickle.load(f)
 
-            context_client = ts.context_from(query["contexte"])
+                context_client = ts.context_from(query["contexte"])
 
+            else:
+                # To create the public/private keys combination
+                context_client = security.context()
+                with open(secret_path, "wb") as f:  # 'ab' to add existing file
+                    encode = pickle.dumps(
+                        {"contexte": context_client.serialize(save_secret_key=True)}
+                    )
+                    f.write(encode)
+
+            secret_key = context_client.secret_key()
+        elif he_backend == "concrete":
+            print("HE backend: Concrete-ML with QuantizedArray.")
+            print("  Note: No key/context needed for quantization-based simulation.")
         else:
-            # To create the public/private keys combination
-            context_client = security.context()
-            with open(secret_path, "wb") as f:  # 'ab' to add existing file
-                encode = pickle.dumps(
-                    {"contexte": context_client.serialize(save_secret_key=True)}
-                )
-                f.write(encode)
-
-        secret_key = context_client.secret_key()
+            raise ValueError(f"Unknown HE backend: {he_backend}")
 
     else:
         print("Run WITHOUT cryptographic protection (baseline)")
@@ -570,6 +607,7 @@ def client_common(
         save_results=results_save,
         yaml_path=path_yaml,
         he=he,
+        he_backend=he_backend,
         context_client=context_client,
         classes=CLASSES,
         zkp=zkp,

@@ -8,5 +8,6 @@ seaborn
 pandas
 opacus
 tenseal
+concrete-ml
 pyyaml
 psutil

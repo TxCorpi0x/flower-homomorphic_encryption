@@ -163,8 +163,17 @@ class ExperimentRunner:
 
         # Start server
         server_log = open(f"{result_dir}/server.log", "w")
+        # Use a dedicated port to avoid conflicts with other runs
+        env_server = os.environ.copy()
+        env_server["FL_SERVER_ADDRESS"] = env_server.get(
+            "FL_SERVER_ADDRESS", "127.0.0.1:8081"
+        )
         server_proc = subprocess.Popen(
-            server_cmd, stdout=server_log, stderr=subprocess.STDOUT, text=True
+            server_cmd,
+            stdout=server_log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env_server,
         )
         self.processes.append(server_proc)
 
@@ -178,12 +187,16 @@ class ExperimentRunner:
         print(f"\nStarting {num_clients} clients...")
         for client_id in range(num_clients):
             client_log = open(f"{result_dir}/client_{client_id}.log", "w")
+            # Ensure clients connect to the same server address
+            env_client = os.environ.copy()
+            env_client["FL_SERVER_ADDRESS"] = env_server["FL_SERVER_ADDRESS"]
             client_proc = subprocess.Popen(
                 client_cmd_template
                 + ["--id_client", str(client_id), "--save_results", f"{result_dir}/"],
                 stdout=client_log,
                 stderr=subprocess.STDOUT,
                 text=True,
+                env=env_client,
             )
             client_procs.append(client_proc)
             self.processes.append(client_proc)
@@ -192,11 +205,12 @@ class ExperimentRunner:
         print("\nWaiting for training to complete...")
         start_time = time.time()
 
-        # Wait for server to complete
+        # Wait for server to complete (generous timeout to avoid premature kill)
+        server_timeout_sec = max(300, self.base_args.get("rounds", 2) * 120)
         try:
-            server_proc.wait(timeout=600)  # 10 minute timeout
+            server_proc.wait(timeout=server_timeout_sec)
         except subprocess.TimeoutExpired:
-            print("⚠️  Server timeout - terminating...")
+            print(f"⚠️  Server timeout after {server_timeout_sec}s - terminating...")
             server_proc.terminate()
 
         # Terminate clients
@@ -218,7 +232,9 @@ class ExperimentRunner:
             with open(benchmark_file, "r") as f:
                 benchmark_data = json.load(f)
 
-        print(f"HE completed in {duration:.2f}s")
+        print(
+            f"HE completed in {duration:.2f}s (server exit code: {server_proc.returncode})"
+        )
 
         return {
             "mode": "he",
