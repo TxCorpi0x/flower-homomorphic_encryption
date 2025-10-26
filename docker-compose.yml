@@ -1,0 +1,534 @@
+services:
+  init:
+    platform: linux/amd64
+    build: .
+    image: flower-he:latest
+    container_name: fl_init
+    working_dir: /app
+    command: >
+      bash -lc "
+        python create_keys.py && \
+        python create_zkp_params.py && \
+        python create_dp_params.py && \
+        echo 'Init done'"
+    volumes:
+      - ./:/app
+    profiles: [init]
+
+  # ---------------- Baseline ----------------
+  server_baseline:
+    platform: linux/amd64
+    image: flower-he:latest
+    build: .
+    container_name: fl_server_baseline
+    environment:
+      - FL_SERVER_ADDRESS=0.0.0.0:8081
+      - FL_SIMULATION=0
+    command:
+      - python
+      - main_server.py
+      - server
+      - --rounds
+      - "3"
+      - --number_clients
+      - "2"
+      - --batch_size
+      - "32"
+      - --dataset
+      - cifar
+      - --data_path
+      - ./data/cifar/
+      - --device
+      - cpu
+      - --benchmark
+      - --min_fit_clients
+      - "2"
+      - --min_avail_clients
+      - "2"
+      - --min_eval_clients
+      - "1"
+      - --frac_fit
+      - "1.0"
+      - --frac_eval
+      - "0.5"
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8081 || exit 1"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - ./:/app
+    profiles: [baseline, all]
+
+  client_baseline_0:
+    platform: linux/amd64
+    image: flower-he:latest
+    build: .
+    container_name: fl_client_baseline_0
+    environment:
+      - FL_SERVER_ADDRESS=server_baseline:8081
+      - FL_SIMULATION=0
+    command:
+      - python
+      - main_client.py
+      - client
+      - --id_client
+      - "0"
+      - --number_clients
+      - "2"
+      - --dataset
+      - cifar
+      - --data_path
+      - ./data/cifar/
+      - --device
+      - cpu
+      - --batch_size
+      - "32"
+      - --save_results
+      - ./results/baseline
+      - --benchmark
+    volumes:
+      - ./:/app
+    depends_on:
+      server_baseline:
+        condition: service_healthy
+    profiles: [baseline, all]
+
+  client_baseline_1:
+    platform: linux/amd64
+    image: flower-he:latest
+    build: .
+    container_name: fl_client_baseline_1
+    environment:
+      - FL_SERVER_ADDRESS=server_baseline:8081
+      - FL_SIMULATION=0
+    command:
+      - python
+      - main_client.py
+      - client
+      - --id_client
+      - "1"
+      - --number_clients
+      - "2"
+      - --dataset
+      - cifar
+      - --data_path
+      - ./data/cifar/
+      - --device
+      - cpu
+      - --batch_size
+      - "32"
+      - --save_results
+      - ./results/baseline
+      - --benchmark
+    volumes:
+      - ./:/app
+    depends_on:
+      server_baseline:
+        condition: service_healthy
+    profiles: [baseline, all]
+
+  # ---------------- HE (TenSEAL) ----------------
+  server_he:
+    platform: linux/amd64
+    image: flower-he:latest
+    build: .
+    container_name: fl_server_he
+    environment:
+      - FL_SERVER_ADDRESS=0.0.0.0:8082
+      - FL_SIMULATION=0
+    command:
+      - python
+      - main_server.py
+      - server
+      - --he
+      - --he_backend
+      - tenseal
+      - --rounds
+      - "3"
+      - --number_clients
+      - "2"
+      - --batch_size
+      - "32"
+      - --dataset
+      - cifar
+      - --data_path
+      - ./data/cifar/
+      - --device
+      - cpu
+      - --benchmark
+      - --min_fit_clients
+      - "2"
+      - --min_avail_clients
+      - "2"
+      - --min_eval_clients
+      - "1"
+      - --frac_fit
+      - "1.0"
+      - --frac_eval
+      - "0.5"
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8082 || exit 1"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - ./:/app
+    profiles: [he, all]
+
+  client_he_0:
+    platform: linux/amd64
+    image: flower-he:latest
+    build: .
+    container_name: fl_client_he_0
+    environment:
+      - FL_SERVER_ADDRESS=server_he:8082
+      - FL_SIMULATION=0
+    command:
+      - python
+      - main_client.py
+      - client
+      - --id_client
+      - "0"
+      - --number_clients
+      - "2"
+      - --dataset
+      - cifar
+      - --data_path
+      - ./data/cifar/
+      - --device
+      - cpu
+      - --batch_size
+      - "32"
+      - --save_results
+      - ./results/he_tenseal
+      - --benchmark
+      - --he
+      - --he_backend
+      - tenseal
+      - --path_keys
+      - secret.pkl
+      - --path_crypted
+      - server.pkl
+    volumes:
+      - ./:/app
+    depends_on:
+      server_he:
+        condition: service_healthy
+    profiles: [he, all]
+
+  client_he_1:
+    platform: linux/amd64
+    image: flower-he:latest
+    build: .
+    container_name: fl_client_he_1
+    environment:
+      - FL_SERVER_ADDRESS=server_he:8082
+      - FL_SIMULATION=0
+    command:
+      - python
+      - main_client.py
+      - client
+      - --id_client
+      - "1"
+      - --number_clients
+      - "2"
+      - --dataset
+      - cifar
+      - --data_path
+      - ./data/cifar/
+      - --device
+      - cpu
+      - --batch_size
+      - "32"
+      - --save_results
+      - ./results/he_tenseal
+      - --benchmark
+      - --he
+      - --he_backend
+      - tenseal
+      - --path_keys
+      - secret.pkl
+      - --path_crypted
+      - server.pkl
+    volumes:
+      - ./:/app
+    depends_on:
+      server_he:
+        condition: service_healthy
+    profiles: [he, all]
+
+  # ---------------- ZKP ----------------
+  server_zkp:
+    platform: linux/amd64
+    image: flower-he:latest
+    build: .
+    container_name: fl_server_zkp
+    environment:
+      - FL_SERVER_ADDRESS=0.0.0.0:8083
+      - FL_SIMULATION=0
+    command:
+      - python
+      - main_server.py
+      - server
+      - --zkp
+      - --zkp_params
+      - zkp_params.pkl
+      - --rounds
+      - "3"
+      - --number_clients
+      - "2"
+      - --batch_size
+      - "32"
+      - --dataset
+      - cifar
+      - --data_path
+      - ./data/cifar/
+      - --device
+      - cpu
+      - --benchmark
+      - --min_fit_clients
+      - "2"
+      - --min_avail_clients
+      - "2"
+      - --min_eval_clients
+      - "1"
+      - --frac_fit
+      - "1.0"
+      - --frac_eval
+      - "0.5"
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8083 || exit 1"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - ./:/app
+    profiles: [zkp, all]
+
+  client_zkp_0:
+    platform: linux/amd64
+    image: flower-he:latest
+    build: .
+    container_name: fl_client_zkp_0
+    environment:
+      - FL_SERVER_ADDRESS=server_zkp:8083
+      - FL_SIMULATION=0
+    command:
+      - python
+      - main_client.py
+      - client
+      - --id_client
+      - "0"
+      - --number_clients
+      - "2"
+      - --dataset
+      - cifar
+      - --data_path
+      - ./data/cifar/
+      - --device
+      - cpu
+      - --batch_size
+      - "32"
+      - --save_results
+      - ./results/zkp
+      - --benchmark
+      - --zkp
+      - --zkp_params
+      - zkp_params.pkl
+    volumes:
+      - ./:/app
+    depends_on:
+      server_zkp:
+        condition: service_healthy
+    profiles: [zkp, all]
+
+  client_zkp_1:
+    platform: linux/amd64
+    image: flower-he:latest
+    build: .
+    container_name: fl_client_zkp_1
+    environment:
+      - FL_SERVER_ADDRESS=server_zkp:8083
+      - FL_SIMULATION=0
+    command:
+      - python
+      - main_client.py
+      - client
+      - --id_client
+      - "1"
+      - --number_clients
+      - "2"
+      - --dataset
+      - cifar
+      - --data_path
+      - ./data/cifar/
+      - --device
+      - cpu
+      - --batch_size
+      - "32"
+      - --save_results
+      - ./results/zkp
+      - --benchmark
+      - --zkp
+      - --zkp_params
+      - zkp_params.pkl
+    volumes:
+      - ./:/app
+    depends_on:
+      server_zkp:
+        condition: service_healthy
+    profiles: [zkp, all]
+
+  # ---------------- DP ----------------
+  server_dp:
+    platform: linux/amd64
+    image: flower-he:latest
+    build: .
+    container_name: fl_server_dp
+    environment:
+      - FL_SERVER_ADDRESS=0.0.0.0:8084
+      - FL_SIMULATION=0
+    command:
+      - python
+      - main_server.py
+      - server
+      - --dp
+      - --dp_params
+      - dp_params.pkl
+      - --rounds
+      - "3"
+      - --number_clients
+      - "2"
+      - --batch_size
+      - "32"
+      - --dataset
+      - cifar
+      - --data_path
+      - ./data/cifar/
+      - --device
+      - cpu
+      - --benchmark
+      - --min_fit_clients
+      - "2"
+      - --min_avail_clients
+      - "2"
+      - --min_eval_clients
+      - "1"
+      - --frac_fit
+      - "1.0"
+      - --frac_eval
+      - "0.5"
+    ports:
+      - "8084:8084"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8084 || exit 1"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - ./:/app
+    
+    profiles: [dp, all]
+
+  client_dp_0:
+    platform: linux/amd64
+    image: flower-he:latest
+    build: .
+    container_name: fl_client_dp_0
+    environment:
+      - FL_SERVER_ADDRESS=server_dp:8084
+      - FL_SIMULATION=0
+    command:
+      - python
+      - main_client.py
+      - client
+      - --id_client
+      - "0"
+      - --number_clients
+      - "2"
+      - --dataset
+      - cifar
+      - --data_path
+      - ./data/cifar/
+      - --device
+      - cpu
+      - --batch_size
+      - "32"
+      - --save_results
+      - ./results/dp
+      - --benchmark
+      - --dp
+      - --dp_params
+      - dp_params.pkl
+    volumes:
+      - ./:/app
+    depends_on:
+      server_dp:
+        condition: service_healthy
+    profiles: [dp, all]
+
+  client_dp_1:
+    platform: linux/amd64
+    image: flower-he:latest
+    build: .
+    container_name: fl_client_dp_1
+    environment:
+      - FL_SERVER_ADDRESS=server_dp:8084
+      - FL_SIMULATION=0
+    command:
+      - python
+      - main_client.py
+      - client
+      - --id_client
+      - "1"
+      - --number_clients
+      - "2"
+      - --dataset
+      - cifar
+      - --data_path
+      - ./data/cifar/
+      - --device
+      - cpu
+      - --batch_size
+      - "32"
+      - --save_results
+      - ./results/dp
+      - --benchmark
+      - --dp
+      - --dp_params
+      - dp_params.pkl
+    volumes:
+      - ./:/app
+    depends_on:
+      server_dp:
+        condition: service_healthy
+    profiles: [dp, all]
+
+  # ---------------- Aggregator (optional) ----------------
+  aggregate:
+    platform: linux/amd64
+    image: flower-he:latest
+    build: .
+    container_name: fl_aggregate
+    working_dir: /app
+    command: >
+      bash -lc "
+        python scripts/aggregate_results.py \
+          --root ./results \
+          --modes baseline,he_tenseal,zkp,dp \
+          --output_dir ./results/docker_compare"
+    volumes:
+      - ./:/app
+    profiles: [aggregate, all]
+
+networks:
+  default:
+    name: flnet
+    driver: bridge

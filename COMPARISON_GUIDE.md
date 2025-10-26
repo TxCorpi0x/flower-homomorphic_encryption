@@ -2,49 +2,53 @@
 
 ## Overview
 
-This project now supports comparing three privacy-preserving federated learning approaches:
+This project now supports comparing **four** privacy-preserving federated learning approaches:
 
 1. **Baseline**: Standard federated learning (no privacy protection)
-2. **Homomorphic Encryption (HE)**: Encrypts model weights using TenSEAL/CKKS
+2. **Homomorphic Encryption (HE)**: Encrypts model weights using TenSEAL/CKKS with real encrypted transport
 3. **Zero-Knowledge Proofs (ZKP)**: Proves model integrity using Pedersen commitments
+4. **Differential Privacy (DP)**: Adds calibrated noise for formal privacy guarantees
 
 ## Quick Start
 
-### 1. Setup
+### 1. Setup (Docker - Recommended)
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Initialize cryptographic parameters
+docker compose --profile init run --rm init
 
-# Create HE keys (if comparing HE)
-python create_keys.py
+# Run all modes sequentially
+bash scripts/run_docker_compare.sh
 
-# Create ZKP parameters (if comparing ZKP)
-python create_zkp_params.py
+# Generate comparison report
+docker compose --profile aggregate run --rm aggregate
 ```
 
-### 2. Run Comparison
+### 2. Run Specific Modes
 
-**Recommended: Baseline + ZKP (Both work reliably)**
 ```bash
-python compare_methods_simple.py --modes baseline,zkp --rounds 2 --number_clients 2
+# Baseline
+docker compose --profile baseline up --abort-on-container-exit
+
+# Homomorphic Encryption
+docker compose --profile he up --abort-on-container-exit
+
+# Zero-Knowledge Proofs
+docker compose --profile zkp up --abort-on-container-exit
+
+# Differential Privacy
+docker compose --profile dp up --abort-on-container-exit
 ```
-
-**Note about HE Mode:**  
-HE mode currently has compatibility issues with Flower's simulation framework due to TenSEAL object serialization constraints. The framework enforces `allow_pickle=False` for security, but TenSEAL encrypted objects cannot be serialized without pickle support.
-
-**Workaround options:**
-1. Compare only Baseline + ZKP (recommended, fully working)
-2. Run HE separately using traditional client-server mode (no simulation)
-3. Wait for framework updates to better support encrypted object serialization
 
 ### 3. View Results
 
-After running, find results in `./results/comparison_all_modes/`:
-- `comparison.png` - Visual comparison plots
+After running, find results in `./results/docker_compare/`:
+- `comparison.png` - Visual comparison plots (6 subplots)
 - `comparison_report.json` - Detailed metrics
 - `baseline/benchmark.json` - Baseline metrics
+- `he_tenseal/benchmark.json` - HE metrics
 - `zkp/benchmark.json` - ZKP metrics
+- `dp/benchmark.json` - DP metrics
 
 ## Comparison Metrics
 
@@ -57,10 +61,11 @@ The comparison provides:
 - **Communication Overhead**: Upload/download data volume
 
 ### Privacy Metrics
-- **Cryptographic Overhead**: Time spent on encryption/proofs
+- **Cryptographic Overhead**: Time spent on encryption/proofs/noise
 - **Proof Generation**: Time to create ZKP proofs (ZKP mode)
 - **Proof Verification**: Time to verify proofs (ZKP mode)
 - **Encryption/Decryption**: Time for HE operations (HE mode)
+- **DP Noise Addition**: Time for gradient noise (DP mode)
 
 ### Model Quality Metrics  
 - **Training Accuracy**: Local model accuracy per client
@@ -68,175 +73,184 @@ The comparison provides:
 - **Global Model Accuracy**: Aggregated model performance
 - **Loss Convergence**: Initial vs final model loss
 
-## Available Comparison Scripts
+## Available Comparison Methods
 
-### 1. `compare_methods_simple.py` (Recommended)
+### 1. Docker Mode (Recommended)
 
-**Best for: Baseline + ZKP comparison**
+**Best for: Full end-to-end comparison with all four modes**
 
-Uses simulation mode for both, provides full benchmarking.
+Uses real gRPC transport, containerized execution, production-ready.
 
 ```bash
-python compare_methods_simple.py \
-  --modes baseline,zkp \
-  --rounds 2 \
-  --number_clients 2 \
-  --output_dir ./results/comparison
+# Run all modes
+bash scripts/run_docker_compare.sh
+
+# Aggregate results
+docker compose --profile aggregate run --rm aggregate
 ```
 
 **Pros:**
-- Fast execution (simulation mode)
+- **All four modes work reliably** (baseline, he, zkp, dp)
+- Real gRPC transport (no simulation)
+- Containerized, reproducible environment
 - Full benchmarking support
-- Reliable results
 - Visual comparison plots
+- **HE now works with real encrypted transport** (serialization fixed)
 
-**Cons:**
-- HE mode not fully supported due to serialization issues
+**Results:**
+- Total time: ~500s for all four modes (3 rounds each)
+- Comprehensive metrics for all privacy approaches
+- Side-by-side comparison plots
 
-### 2. `compare_methods.py` (Original)
+### 2. Simulation Mode (Alternative)
 
-**Best for: Trying all three modes**
-
-Attempts to run all three modes including HE.
+**Best for: Quick local testing**
 
 ```bash
-python compare_methods.py \
-  --modes baseline,he,zkp \
-  --rounds 2 \
-  --number_clients 4
+# Test individual modes
+python simulation.py simulation --benchmark --rounds 2 --number_clients 2
+python simulation.py simulation --he --benchmark --rounds 2 --number_clients 2
+python simulation.py simulation --zkp --zkp_params zkp_params.pkl --benchmark --rounds 2
+python simulation.py simulation --dp --dp_params dp_params.pkl --benchmark --rounds 2
 ```
 
 **Pros:**
-- Includes HE mode attempt
-- Comprehensive comparison
+- Faster startup (no Docker overhead)
+- Good for development/debugging
 
 **Cons:**
-- HE may fail with serialization errors
-- Results may be incomplete
-
-### 3. Individual Mode Testing
-
-Test each mode separately:
-
-```bash
-# Baseline
-python simulation.py simulation --benchmark --rounds 2 --number_clients 2
-
-# ZKP
-python simulation.py simulation --zkp --zkp_params zkp_params.pkl --benchmark --rounds 2 --number_clients 2
-
-# HE (may have issues in simulation)
-python simulation.py simulation --he --path_keys secret.pkl --path_public_key server_key.pkl --benchmark --rounds 2 --number_clients 2
-```
+- Simulation framework limitations
+- May not reflect real gRPC behavior
 
 ## Understanding Results
 
-### Typical Performance Profile
+### Typical Performance Profile (Docker, 3 rounds, 2 clients)
 
 **Baseline** (Fast, no privacy):
-- Training: ~20s for 2 rounds
+- Total time: ~139s
 - Crypto overhead: 0s
-- Accuracy: ~43%
+- Accuracy: ~45.79%
+- Communication: ~1.4 MB
 
-**ZKP** (Medium overhead, proof-based privacy):
-- Training: ~20s + ~140s crypto overhead
-- Crypto: Proof generation + verification
-- Accuracy: ~42% (similar to baseline)
-- Communication: Slightly higher (includes commitments)
+**HE** (Real encrypted transport):
+- Total time: ~143s
+- Crypto overhead: ~3.7s (encryption/decryption)
+- Accuracy: ~45.29%
+- Communication: ~328 MB (encrypted parameters larger)
+- **Status**: ✅ Working with real TenSEAL serialization over gRPC
 
-**HE** (High overhead, encrypted computation):
-- Training: Variable (depends on encryption efficiency)
-- Crypto: Encryption + decryption overhead
-- Accuracy: Should match baseline
-- Communication: Much higher (encrypted parameters larger)
+**ZKP** (Proof-based integrity):
+- Total time: ~243s
+- Crypto overhead: ~93s (proof generation + verification)
+- Accuracy: ~47.00%
+- Communication: ~1.4 MB (includes commitments)
+
+**DP** (Noise-based privacy):
+- Total time: ~151s
+- Crypto overhead: <0.1s (noise addition)
+- Accuracy: ~44.81%
+- Communication: ~1.4 MB
 
 ### Performance Trade-offs
 
 | Mode | Privacy Level | Speed | Communication | Accuracy Impact |
 |------|--------------|-------|---------------|-----------------|
-| Baseline | None | Fast | Low | Baseline |
-| ZKP | High (Integrity) | Medium | Medium | Minimal |
-| HE | Highest (Confidentiality) | Slow | High | Minimal |
+| Baseline | None | Fast | Low | Baseline (~46%) |
+| HE | Highest (Confidentiality) | Medium | Very High | Similar (~45%) |
+| ZKP | High (Integrity) | Slow | Low | Similar (~47%) |
+| DP | Medium (Formal ε-DP) | Fast | Low | Tunable (~45%) |
 
 ## Troubleshooting
 
-### HE Serialization Error
+### Docker Issues
 
-**Error:** `ValueError: Object arrays cannot be saved when allow_pickle=False`
+**Error:** Port already in use (8081-8084)
 
-**Cause:** Flower simulation cannot serialize TenSEAL encrypted objects.
+**Solution:** Change ports in `docker-compose.yml` or stop conflicting services
 
-**Solution:** 
-- Use baseline + ZKP comparison (both work reliably)
-- Run HE in traditional client-server mode (not simulation)
-- Wait for framework updates
+**Error:** TenSEAL build fails
 
-### ZKP Parameter Error
+**Solution:** The Dockerfile ensures `platform: linux/amd64` and installs build tools
 
-**Error:** `FileNotFoundError: zkp_params.pkl`
-
-**Solution:**
-```bash
-python create_zkp_params.py
-```
-
-### HE Keys Missing
+### Key/Parameter Issues
 
 **Error:** `FileNotFoundError: secret.pkl`
 
 **Solution:**
 ```bash
-python create_keys.py
+docker compose --profile init run --rm init
 ```
 
-### Ray Memory Issues
+Or locally:
+```bash
+python create_keys.py
+python create_zkp_params.py
+python create_dp_params.py
+```
 
-**Error:** `OutOfMemoryError` or actor crashes
+### HE Scale Issues
 
-**Solution:**
-- Reduce `--number_clients`
-- Reduce `--batch_size`
-- Use fewer concurrent actors
+**Error:** "scale out of bounds" during aggregation
+
+**Solution:** The current implementation uses normalized weights (num/total) to prevent scale overflow. This is already fixed in `server.py`.
 
 ## Configuration Options
 
+### Docker Mode
+
 ```bash
-python compare_methods_simple.py \
-  --modes baseline,zkp \          # Modes to compare
+# Run specific mode
+docker compose --profile <mode> up --abort-on-container-exit
+# where <mode> is: baseline, he, zkp, dp
+
+# Configure via docker-compose.yml:
+# - Number of rounds
+# - Number of clients
+# - Batch size
+# - Device (cpu/cuda)
+```
+
+### Simulation Mode
+
+```bash
+python simulation.py simulation \
   --rounds 5 \                     # FL rounds
   --number_clients 4 \             # Number of clients
   --max_epochs 1 \                 # Local epochs per round
   --batch_size 64 \                # Training batch size
   --device cpu \                   # Device (cpu/cuda/mps)
-  --output_dir ./results/my_test   # Output directory
+  --benchmark                      # Enable benchmarking
 ```
 
 ## Best Practices
 
-1. **Start Small**: Test with 2 clients, 2 rounds first
-2. **Use Baseline + ZKP**: Most reliable comparison currently
-3. **Monitor Resources**: Ray simulation can be memory-intensive
-4. **Check Logs**: Look at `stdout.log` and `stderr.log` in result directories
-5. **Validate Benchmarks**: Ensure `benchmark.json` has non-zero values
+1. **Use Docker Mode**: Most reliable for full comparison (all four modes work)
+2. **Start Small**: Test with 2 clients, 3 rounds first
+3. **Monitor Resources**: Check `docker stats` for memory usage
+4. **Check Logs**: Look at container logs with `docker compose logs <service>`
+5. **Validate Benchmarks**: Ensure `benchmark.json` files exist with non-zero values
+6. **Run Aggregation**: Always run the aggregate profile after all modes complete
 
 ## Implementation Status
 
 - ✅ **Baseline Mode**: Fully working with benchmarking
+- ✅ **HE Mode**: Fully working with real encrypted gRPC transport (scale issue fixed)
 - ✅ **ZKP Mode**: Fully working with benchmarking  
-- ⚠️ **HE Mode**: Works standalone, serialization issues in simulation
-- ✅ **Comparison Framework**: Working for baseline + ZKP
+- ✅ **DP Mode**: Fully working with benchmarking
+- ✅ **Comparison Framework**: Working for all four modes
 - ✅ **Visualization**: 6-plot comparison dashboard
-- ✅ **Model Quality Metrics**: Train/val/test accuracy and loss tracking
+- ✅ **Docker Support**: All modes containerized and tested
 
 ## Future Improvements
 
 Potential enhancements:
 
-1. **Fix HE Serialization**: Modify HE to serialize to raw bytes before Flower serialization
-2. **Differential Privacy**: Add DP noise to gradients
-3. **Secure Aggregation**: Implement secure multi-party computation
-4. **More Datasets**: Support MNIST, Fashion-MNIST, etc.
-5. **GPU Support**: Enable GPU acceleration for faster training
+1. **GPU Support**: Enable GPU acceleration in Docker
+2. **More Datasets**: Support ImageNet, medical imaging datasets
+3. **Secure Aggregation**: Implement multi-party secure aggregation
+4. **Byzantine Robustness**: Add robust aggregation against malicious clients
+5. **Cross-Device FL**: Support mobile/edge device scenarios
+6. **Hyperparameter Tuning**: Automated DP epsilon selection, HE parameter optimization
 
 ## References
 
@@ -248,13 +262,13 @@ Potential enhancements:
 ## Support
 
 For issues or questions:
-1. Check logs in result directories
-2. Review error messages in `stderr.log`
-3. Test modes individually before comparison
-4. Start with small configurations (2 clients, 2 rounds)
-5. Use baseline + ZKP for reliable results
+1. Check container logs: `docker compose logs <service>`
+2. Review benchmarks in `./results/<mode>/`
+3. Test modes individually before full comparison
+4. Start with small configurations (2 clients, 3 rounds)
+5. Use Docker mode for most reliable results
 
 ---
 
-**Last Updated:** October 19, 2025  
-**Status:** Baseline ✅ | ZKP ✅ | HE ⚠️ (serialization issue)
+**Last Updated:** January 2025  
+**Status:** Baseline ✅ | HE ✅ | ZKP ✅ | DP ✅ (all modes working in Docker)

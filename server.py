@@ -321,18 +321,24 @@ class FedCustom(fl.server.strategy.Strategy):
                         tensors.append(arr)
                 enc_results.append((tensors, fit_res.num_examples))
 
-            # Weighted average under encryption
-            num_examples_total = sum(num for _, num in enc_results)
+            # Weighted average under encryption, avoiding large scale growth
+            # Use normalized ratios (num/total) directly to prevent multiplying by large integers.
+            num_examples_total = float(sum(num for _, num in enc_results))
             aggregated = []
             num_layers = len(enc_results[0][0])
 
+            # Precompute normalized weights as plain scalars (sum to 1.0)
+            norm_weights = [float(num) / num_examples_total for _, num in enc_results]
+
             for layer_idx in range(num_layers):
                 acc = None
-                for tensors, num in enc_results:
+                for (tensors, _), alpha in zip(enc_results, norm_weights):
                     w = tensors[layer_idx]
-                    term = w * num  # works for both numpy arrays and CKKSTensor
+                    # Multiply by small scalar alpha (~<=1) to keep CKKS scale bounded
+                    term = w * alpha
                     acc = term if acc is None else acc + term
-                avg = acc * (1.0 / num_examples_total)
+
+                avg = acc
 
                 # Serialize encrypted tensors back to uint8 for transport; keep numpy arrays as-is
                 if hasattr(avg, "serialize"):

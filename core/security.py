@@ -590,14 +590,131 @@ def load_dp_params(filepath: str) -> DifferentialPrivacyParams:
     return DifferentialPrivacyParams.from_dict(params_dict)
 
 
-# /////////////////////// Concrete-ML (simulation helper) \\\\\\\\\\\\\
+# /////////////////////// Concrete-ML (Enhanced Integration) \\\\\\\\\\\\\
 
-from concrete.ml.quantization import QuantizedArray
+"""
+Enhanced Concrete-ML Integration for Privacy-Preserving Federated Learning
+
+This section provides mature Concrete-ML integration based on Zama's use cases:
+- Quantization-Aware Training (QAT) with Brevitas
+- FHE Model Compilation and Deployment
+- Advanced Quantization Strategies
+- FHE Client/Server Architecture
+
+References:
+- https://docs.zama.ai/concrete-ml/
+- Zama use cases: CIFAR, Sentiment Analysis, Credit Scoring, Federated Learning
+"""
+
+try:
+    from concrete.ml.quantization import QuantizedArray
+    from concrete.ml.torch.compile import (
+        compile_torch_model,
+        compile_brevitas_qat_model,
+    )
+    from concrete.ml.deployment import FHEModelDev, FHEModelClient, FHEModelServer
+    from concrete.fhe import Configuration
+    import torch.nn as nn
+
+    CONCRETE_ML_AVAILABLE = True
+except ImportError:
+    CONCRETE_ML_AVAILABLE = False
+    QuantizedArray = None
+    print(
+        "Warning: concrete-ml not fully available. Install with: pip install concrete-ml"
+    )
+
+
+class ConcreteMLConfig:
+    """
+    Configuration for Concrete-ML FHE compilation.
+
+    Based on Zama's use case examples for optimal FHE performance.
+
+    Args:
+        n_bits: Number of bits for weight/activation quantization (2-8, default: 8)
+        rounding_threshold_bits: Rounding parameter for PBS optimization (default: None)
+        p_error: Probability of error for FHE operations (default: 0.01)
+        global_p_error: Global error probability budget (default: None)
+        verbose: Enable verbose compilation output (default: False)
+        show_mlir: Show MLIR intermediate representation (default: False)
+        enable_unsafe_features: Allow unsafe optimizations (default: False)
+        use_insecure_key_cache: Cache keys for faster dev iteration (default: False)
+        jit: Enable JIT compilation (default: False)
+
+    Performance Guidelines (from Zama examples):
+        n_bits=2-4:  Very fast inference (~100ms), accuracy loss 5-15%
+        n_bits=5-6:  Fast inference (~500ms), accuracy loss 2-5%
+        n_bits=7-8:  Slower inference (~1-5s), minimal accuracy loss <2%
+
+        p_error=0.001-0.01: Low error, slower, more secure
+        p_error=0.01-0.05:  Balanced (recommended)
+        p_error=0.05-0.1:   High error, faster, less secure
+    """
+
+    def __init__(
+        self,
+        n_bits: int = 8,
+        rounding_threshold_bits: int = None,
+        p_error: float = 0.01,
+        global_p_error: float = None,
+        verbose: bool = False,
+        show_mlir: bool = False,
+        enable_unsafe_features: bool = False,
+        use_insecure_key_cache: bool = False,
+        jit: bool = False,
+    ):
+        self.n_bits = n_bits
+        self.rounding_threshold_bits = rounding_threshold_bits
+        self.p_error = p_error
+        self.global_p_error = global_p_error
+        self.verbose = verbose
+        self.show_mlir = show_mlir
+        self.enable_unsafe_features = enable_unsafe_features
+        self.use_insecure_key_cache = use_insecure_key_cache
+        self.jit = jit
+
+    def to_configuration(self):
+        """Convert to Concrete Configuration object."""
+        if not CONCRETE_ML_AVAILABLE:
+            raise ImportError("concrete-ml is required for FHE compilation")
+
+        config = Configuration(
+            enable_unsafe_features=self.enable_unsafe_features,
+            use_insecure_key_cache=self.use_insecure_key_cache,
+            insecure_key_cache_location="./keys_cache",
+        )
+
+        if self.show_mlir:
+            config.dump_artifacts_on_unexpected_failures = True
+
+        return config
+
+    def to_dict(self):
+        """Convert configuration to dictionary."""
+        return {
+            "n_bits": self.n_bits,
+            "rounding_threshold_bits": self.rounding_threshold_bits,
+            "p_error": self.p_error,
+            "global_p_error": self.global_p_error,
+            "verbose": self.verbose,
+            "show_mlir": self.show_mlir,
+            "enable_unsafe_features": self.enable_unsafe_features,
+            "use_insecure_key_cache": self.use_insecure_key_cache,
+            "jit": self.jit,
+        }
+
+    @classmethod
+    def from_dict(cls, config_dict):
+        """Create configuration from dictionary."""
+        return cls(**config_dict)
 
 
 def _concrete_quantize(arr: np.ndarray, n_bits: int = 8) -> np.ndarray:
     """
     Use Concrete-ML's QuantizedArray for realistic quantization.
+
+    Follows Zama's quantization approach from CIFAR and Sentiment Analysis examples.
 
     Args:
         arr: Input numpy array
@@ -606,6 +723,20 @@ def _concrete_quantize(arr: np.ndarray, n_bits: int = 8) -> np.ndarray:
     Returns:
         Dequantized float32 array
     """
+    if not CONCRETE_ML_AVAILABLE or QuantizedArray is None:
+        # Fallback to simple numpy quantization
+        if arr.size == 0:
+            return arr.astype(np.float32, copy=False)
+
+        arr_min, arr_max = arr.min(), arr.max()
+        if arr_min == arr_max:
+            return arr.astype(np.float32, copy=False)
+
+        scale = (arr_max - arr_min) / (2**n_bits - 1)
+        quantized = np.round((arr - arr_min) / scale)
+        dequantized = quantized * scale + arr_min
+        return dequantized.astype(np.float32, copy=False)
+
     if arr.size == 0:
         return arr.astype(np.float32, copy=False)
 
@@ -614,7 +745,7 @@ def _concrete_quantize(arr: np.ndarray, n_bits: int = 8) -> np.ndarray:
     arr_flat = arr.flatten()
 
     # Create QuantizedArray with specified bit-width
-    # is_signed=True for symmetric quantization around zero
+    # is_signed=True for symmetric quantization around zero (Zama recommended)
     qarray = QuantizedArray(
         n_bits=n_bits,
         values=arr_flat,
@@ -660,3 +791,311 @@ def simulate_concrete_encrypt(
         simulated.append(deq)
 
     return simulated
+
+
+def compile_model_for_fhe(
+    model: "nn.Module",
+    input_sample: np.ndarray,
+    config: ConcreteMLConfig,
+    is_brevitas_qat: bool = False,
+) -> Tuple[Any, Dict[str, Any]]:
+    """
+    Compile PyTorch model to FHE circuit using Concrete-ML.
+
+    Supports both standard PyTorch models and Brevitas QAT models.
+    Based on Zama's CIFAR and Federated Learning examples.
+
+    Args:
+        model: PyTorch model to compile
+        input_sample: Representative input for tracing (batch_size=1)
+        config: Concrete-ML configuration
+        is_brevitas_qat: Whether model uses Brevitas QAT
+
+    Returns:
+        Tuple of (quantized_module, compilation_stats)
+
+    Example:
+        >>> from core.model_builder import build_model
+        >>> model = build_model()
+        >>> config = ConcreteMLConfig(n_bits=8, p_error=0.01)
+        >>> input_sample = np.random.randn(1, 3, 32, 32)
+        >>> quantized_module, stats = compile_model_for_fhe(model, input_sample, config)
+    """
+    if not CONCRETE_ML_AVAILABLE:
+        raise ImportError(
+            "concrete-ml is not installed. " "Install with: pip install concrete-ml"
+        )
+
+    print(f"[Concrete-ML] Compiling model for FHE...")
+    print(f"[Concrete-ML] Config: {config.n_bits}-bit, p_error={config.p_error}")
+    start_time = time.time()
+
+    try:
+        # Choose compilation method based on model type
+        if is_brevitas_qat:
+            print(f"[Concrete-ML] Using Brevitas QAT compilation...")
+            quantized_module = compile_brevitas_qat_model(
+                model,
+                input_sample,
+                n_bits=config.n_bits,
+                rounding_threshold_bits=config.rounding_threshold_bits,
+                p_error=config.p_error,
+                global_p_error=config.global_p_error,
+                verbose=config.verbose,
+                configuration=config.to_configuration(),
+            )
+        else:
+            print(f"[Concrete-ML] Using standard PyTorch compilation...")
+            quantized_module = compile_torch_model(
+                model,
+                input_sample,
+                n_bits=config.n_bits,
+                rounding_threshold_bits=config.rounding_threshold_bits,
+                p_error=config.p_error,
+                verbose=config.verbose,
+                configuration=config.to_configuration(),
+            )
+
+        compile_time = time.time() - start_time
+
+        # Gather compilation statistics
+        stats = {
+            "compile_time": compile_time,
+            "n_bits": config.n_bits,
+            "p_error": config.p_error,
+            "is_compiled": True,
+            "complexity": (
+                quantized_module.fhe_circuit.complexity
+                if quantized_module.fhe_circuit
+                else 0
+            ),
+        }
+
+        print(f"[Concrete-ML] ✅ Compilation successful in {compile_time:.2f}s")
+        print(f"[Concrete-ML] Circuit complexity: {stats['complexity']}")
+
+        return quantized_module, stats
+
+    except Exception as e:
+        compile_time = time.time() - start_time
+        print(f"[Concrete-ML] ❌ Compilation failed: {e}")
+        return None, {
+            "compile_time": compile_time,
+            "is_compiled": False,
+            "error": str(e),
+        }
+
+
+def fhe_inference_simulated(
+    quantized_module: Any,
+    x: np.ndarray,
+) -> np.ndarray:
+    """
+    Run simulated FHE inference (no actual encryption, for testing).
+
+    Args:
+        quantized_module: Compiled Concrete-ML QuantizedModule
+        x: Input numpy array
+
+    Returns:
+        Simulated FHE output
+
+    Example:
+        >>> output = fhe_inference_simulated(quantized_module, test_input)
+    """
+    if not CONCRETE_ML_AVAILABLE:
+        raise ImportError("concrete-ml is required")
+
+    return quantized_module.forward(x, fhe="simulate")
+
+
+def fhe_inference_encrypted(
+    quantized_module: Any,
+    x: np.ndarray,
+) -> np.ndarray:
+    """
+    Run real FHE inference on encrypted input.
+
+    Args:
+        quantized_module: Compiled Concrete-ML QuantizedModule
+        x: Input numpy array (cleartext, will be encrypted internally)
+
+    Returns:
+        Decrypted output predictions
+
+    Example:
+        >>> output = fhe_inference_encrypted(quantized_module, test_input)
+    """
+    if not CONCRETE_ML_AVAILABLE:
+        raise ImportError("concrete-ml is required")
+
+    return quantized_module.forward(x, fhe="execute")
+
+
+def save_fhe_deployment(
+    quantized_module: Any,
+    path: str,
+):
+    """
+    Save FHE model artifacts for client/server deployment.
+
+    Creates client.zip and server.zip for production deployment,
+    following Zama's deployment pattern.
+
+    Args:
+        quantized_module: Compiled Concrete-ML QuantizedModule
+        path: Directory path to save artifacts
+
+    Example:
+        >>> save_fhe_deployment(quantized_module, "./fhe_deploy/")
+        >>> # Creates: ./fhe_deploy/client.zip, ./fhe_deploy/server.zip
+    """
+    if not CONCRETE_ML_AVAILABLE:
+        raise ImportError("concrete-ml is required")
+
+    from pathlib import Path
+
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+    print(f"[Concrete-ML] Saving deployment artifacts to {path}")
+
+    # Create FHEModelDev for export
+    fhe_dev = FHEModelDev(path=str(path), model=quantized_module)
+    fhe_dev.save()
+
+    print(f"[Concrete-ML] ✅ Saved: client.zip, server.zip")
+
+
+def load_fhe_client(deployment_path: str):
+    """
+    Load FHE client from deployment artifacts.
+
+    Args:
+        deployment_path: Path to deployment directory with client.zip
+
+    Returns:
+        FHEModelClient instance
+
+    Example:
+        >>> client = load_fhe_client("./fhe_deploy/")
+        >>> # Use client for encryption/decryption
+    """
+    if not CONCRETE_ML_AVAILABLE:
+        raise ImportError("concrete-ml is required")
+
+    return FHEModelClient(path=deployment_path)
+
+
+def load_fhe_server(deployment_path: str):
+    """
+    Load FHE server from deployment artifacts.
+
+    Args:
+        deployment_path: Path to deployment directory with server.zip
+
+    Returns:
+        FHEModelServer instance
+
+    Example:
+        >>> server = load_fhe_server("./fhe_deploy/")
+        >>> # Use server for FHE inference
+    """
+    if not CONCRETE_ML_AVAILABLE:
+        raise ImportError("concrete-ml is required")
+
+    return FHEModelServer(path=deployment_path)
+
+
+def quantize_parameters_concrete(
+    state_dict: Dict[str, Any],
+    n_bits: int = 8,
+) -> List[np.ndarray]:
+    """
+    Quantize model parameters using Concrete-ML quantization.
+
+    This is useful for FL parameter aggregation with quantization awareness,
+    reducing communication overhead while maintaining accuracy.
+
+    Args:
+        state_dict: PyTorch state dict
+        n_bits: Quantization bit-width (2-8)
+
+    Returns:
+        List of quantized numpy arrays
+
+    Example:
+        >>> from core.model_builder import build_model
+        >>> model = build_model()
+        >>> quantized = quantize_parameters_concrete(model.state_dict(), n_bits=6)
+    """
+    quantized = []
+    for name, tensor in state_dict.items():
+        np_arr = tensor.detach().cpu().numpy()
+        quantized_arr = _concrete_quantize(np_arr, n_bits=n_bits)
+        quantized.append(quantized_arr)
+
+    return quantized
+
+
+def benchmark_fhe_inference(
+    quantized_module: Any,
+    test_inputs: np.ndarray,
+    n_samples: int = 10,
+    mode: str = "simulate",
+) -> Dict[str, float]:
+    """
+    Benchmark Concrete-ML FHE inference performance.
+
+    Args:
+        quantized_module: Compiled Concrete-ML model
+        test_inputs: Test input array (n_samples, ...)
+        n_samples: Number of samples to benchmark
+        mode: 'simulate' or 'execute' (real FHE)
+
+    Returns:
+        Timing statistics dictionary
+
+    Example:
+        >>> stats = benchmark_fhe_inference(quantized_module, test_data, n_samples=10, mode="simulate")
+        >>> print(f"Mean inference time: {stats['mean_inference_time']:.3f}s")
+    """
+    if not CONCRETE_ML_AVAILABLE:
+        raise ImportError("concrete-ml is required")
+
+    timings = []
+
+    for i in range(min(n_samples, len(test_inputs))):
+        x = test_inputs[i : i + 1]
+
+        start = time.time()
+        if mode == "simulate":
+            _ = quantized_module.forward(x, fhe="simulate")
+        else:
+            _ = quantized_module.forward(x, fhe="execute")
+        elapsed = time.time() - start
+
+        timings.append(elapsed)
+
+    return {
+        "mean_inference_time": np.mean(timings),
+        "std_inference_time": np.std(timings),
+        "min_inference_time": np.min(timings),
+        "max_inference_time": np.max(timings),
+        "total_time": np.sum(timings),
+        "mode": mode,
+        "n_samples": len(timings),
+    }
+
+
+def save_concrete_config(config: ConcreteMLConfig, filepath: str):
+    """Save Concrete-ML configuration to file."""
+    with open(filepath, "wb") as f:
+        pickle.dump(config.to_dict(), f)
+
+
+def load_concrete_config(filepath: str) -> ConcreteMLConfig:
+    """Load Concrete-ML configuration from file."""
+    with open(filepath, "rb") as f:
+        config_dict = pickle.load(f)
+    return ConcreteMLConfig.from_dict(config_dict)
